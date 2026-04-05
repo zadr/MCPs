@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "apple-tools": {
+      "type": "stdio",
+      "command": "/Users/z/Projects/cli/mcps/apple-tools-mcp/.build/debug/apple-tools-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}

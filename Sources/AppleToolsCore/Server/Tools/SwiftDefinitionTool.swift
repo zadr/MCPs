@@ -1,0 +1,65 @@
+import MCP
+
+enum SwiftDefinitionTool {
+    static let name = "swift_definition"
+
+    static var definition: Tool {
+        Tool(
+            name: name,
+            description: "Go to the definition of a symbol at a position in a Swift file",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "filePath": .object([
+                        "type": .string("string"),
+                        "description": .string("Absolute path to the Swift file"),
+                    ]),
+                    "line": .object([
+                        "type": .string("integer"),
+                        "description": .string("0-indexed line number"),
+                    ]),
+                    "character": .object([
+                        "type": .string("integer"),
+                        "description": .string("0-indexed character offset in the line"),
+                    ]),
+                ]),
+                "required": .array([.string("filePath"), .string("line"), .string("character")]),
+            ]),
+            annotations: .init(readOnlyHint: true, openWorldHint: false)
+        )
+    }
+
+    static func handle(
+        _ arguments: [String: Value]?,
+        lspService: SourceKitLSPService
+    ) async throws -> CallTool.Result {
+        guard let args = arguments,
+              let filePath = args["filePath"]?.stringValue else {
+            throw MCPError.invalidParams("Missing required argument: filePath")
+        }
+        guard let line = args["line"]?.intValue ?? args["line"]?.doubleValue.map({ Int($0) }) else {
+            throw MCPError.invalidParams("Missing required argument: line")
+        }
+        guard let character = args["character"]?.intValue ?? args["character"]?.doubleValue.map({ Int($0) }) else {
+            throw MCPError.invalidParams("Missing required argument: character")
+        }
+
+        let uri = FileURI.fromPath(filePath)
+        let locations = try await lspService.definition(uri: uri, line: line, character: character)
+
+        let text: String
+        if locations.isEmpty {
+            text = "No definition found at this position."
+        } else {
+            let lines = locations.map { location -> String in
+                let path = FileURI.toPath(location.uri)
+                let startLine = location.range.start.line
+                let startChar = location.range.start.character
+                return "\(path):\(startLine):\(startChar)"
+            }
+            text = lines.joined(separator: "\n")
+        }
+
+        return .init(content: [.text(text: text, annotations: nil, _meta: nil)], isError: false)
+    }
+}
