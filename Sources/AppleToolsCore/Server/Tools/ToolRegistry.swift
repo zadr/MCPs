@@ -8,6 +8,7 @@ public enum ToolRegistry {
                 XcodebuildTool.definition,
                 NotarytoolTool.definition,
                 GitTool.definition,
+                SwiftLintTool.definition,
             ])
         }
 
@@ -21,6 +22,8 @@ public enum ToolRegistry {
                 return try await NotarytoolTool.handle(params.arguments)
             case GitTool.name:
                 return try await GitTool.handle(params.arguments)
+            case SwiftLintTool.name:
+                return try await SwiftLintTool.handle(params.arguments)
             default:
                 throw MCPError.invalidParams("Unknown tool: \(params.name)")
             }
