@@ -54,7 +54,8 @@ enum SwiftDocumentSymbolsTool {
 
         let prefix = String(repeating: "  ", count: indent)
         let kindName = kind?.description.lowercased() ?? "unknown"
-        lines.append("\(prefix)\(kindName) \(symbol.name)")
+        let line = symbol.selectionRange.start.line
+        lines.append("\(prefix)\(kindName) \(symbol.name) L\(line)")
 
         if let children = symbol.children {
             // Group children by kind
@@ -73,9 +74,9 @@ enum SwiftDocumentSymbolsTool {
             let memberPrefix = String(repeating: "  ", count: indent + 2)
             for (groupKind, members) in groups {
                 if members.count == 1 {
-                    // Single member — inline the kind
                     let m = members[0]
-                    lines.append("\(childPrefix)\(groupKind) \(m.name)")
+                    let mLine = m.selectionRange.start.line
+                    lines.append("\(childPrefix)\(groupKind) \(m.name) L\(mLine)")
                     if let grandchildren = m.children, !grandchildren.isEmpty {
                         for gc in grandchildren {
                             formatSymbol(gc, indent: indent + 2, into: &lines)
@@ -87,7 +88,8 @@ enum SwiftDocumentSymbolsTool {
                         : groupKind + "s"
                     lines.append("\(childPrefix)\(plural):")
                     for m in members {
-                        lines.append("\(memberPrefix)\(m.name)")
+                        let mLine = m.selectionRange.start.line
+                        lines.append("\(memberPrefix)\(m.name) L\(mLine)")
                         if let grandchildren = m.children, !grandchildren.isEmpty {
                             for gc in grandchildren {
                                 formatSymbol(gc, indent: indent + 3, into: &lines)

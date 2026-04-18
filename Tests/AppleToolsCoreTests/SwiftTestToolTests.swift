@@ -112,6 +112,19 @@ final class SwiftTestToolTests: XCTestCase {
         XCTAssertEqual(result.totalCount, 3)
     }
 
+    func testParallelWithFailure() {
+        let output = """
+        [1/3] Testing MyTests.FooTests/testAlpha
+        [2/3] Testing MyTests.FooTests/testBeta
+        [3/3] Testing MyTests.FooTests/testGamma
+        \u{10007B}  Test run with 0 tests in 0 suites passed after 0.001 seconds.
+        """
+        let result = SwiftTestTool.parseTestOutput(output, exitCode: 1)
+
+        XCTAssertFalse(result.succeeded)
+        XCTAssertEqual(result.totalCount, 3)
+    }
+
     func testXCTestSummaryUsesLastMatch() {
         // When multiple "Executed N tests" lines exist (per-suite + overall),
         // the parser should use the last (overall) match.
@@ -161,6 +174,41 @@ final class SwiftTestToolTests: XCTestCase {
         let failed = result.testCases.filter { $0.status == .failed }
         XCTAssertEqual(failed.count, 1)
         XCTAssertEqual(failed[0].name, "testBroken()")
+    }
+
+    // MARK: - parseTestOutput: Swift Testing SF Symbol format (v1743+)
+
+    func testSwiftTestingSFSymbolsPassed() {
+        // Newer Swift Testing uses SF Symbols instead of ✔✘◆◇
+        let output = """
+        \u{100F48}  Test run started.
+        \u{100453}  Testing Library Version: 1743
+        \u{100453}  Target Platform: arm64e-apple-macos14.0
+        \u{100F48}  Suite "My Suite" started.
+        \u{100F48}  Test "TickClock start and stop lifecycle" started.
+        \u{10105B}  Test "TickClock start and stop lifecycle" passed after 0.053 seconds.
+        \u{10105B}  Suite "My Suite" passed after 0.054 seconds.
+        \u{10105B}  Test run with 1 test in 1 suite passed after 0.054 seconds.
+        """
+        let result = SwiftTestTool.parseTestOutput(output, exitCode: 0)
+
+        XCTAssertTrue(result.succeeded)
+        XCTAssertEqual(result.testCases.count, 1)
+        XCTAssertEqual(result.testCases[0].name, "TickClock start and stop lifecycle")
+        XCTAssertEqual(result.testCases[0].status, .passed)
+        XCTAssertEqual(result.testCases[0].duration, 0.053)
+        XCTAssertEqual(result.totalCount, 1)
+    }
+
+    func testSwiftTestingSFSymbolsSummaryCount() {
+        // "Test run with N tests in M suites passed" should contribute to totalCount
+        let output = """
+        \u{10105B}  Test run with 5 tests in 2 suites passed after 1.234 seconds.
+        """
+        let result = SwiftTestTool.parseTestOutput(output, exitCode: 0)
+
+        XCTAssertTrue(result.succeeded)
+        XCTAssertEqual(result.totalCount, 5)
     }
 
     // MARK: - formatTestResult
@@ -218,6 +266,33 @@ final class SwiftTestToolTests: XCTestCase {
 
         XCTAssertTrue(formatted.contains("Raw output:"))
         XCTAssertTrue(formatted.contains("no tests were run"))
+    }
+
+    func testFormatFallbackStripsBuildNoise() {
+        let result = SwiftTestTool.TestResult(
+            succeeded: false,
+            testCases: [],
+            totalCount: 0,
+            failedCount: 0,
+            duration: nil,
+            rawOutput: """
+            Building for debugging...
+            [1/50] Compiling MyApp Foo.swift
+            [2/50] Compiling MyApp Bar.swift
+            Linking MyAppTests
+            Build complete! (2.3s)
+            error: fatalError hit in testSomething
+            some useful details here
+            """
+        )
+        let formatted = SwiftTestTool.formatTestResult(result)
+
+        XCTAssertTrue(formatted.contains("error: fatalError hit in testSomething"))
+        XCTAssertTrue(formatted.contains("some useful details here"))
+        XCTAssertFalse(formatted.contains("Building for"))
+        XCTAssertFalse(formatted.contains("Compiling"))
+        XCTAssertFalse(formatted.contains("Linking"))
+        XCTAssertFalse(formatted.contains("Build complete"))
     }
 
     func testFormatDurationMinutes() {

@@ -375,7 +375,7 @@ final class LSPTypesTests: XCTestCase {
         XCTAssertEqual(LSPSymbolKind.object.description, "Object")
         XCTAssertEqual(LSPSymbolKind.key.description, "Key")
         XCTAssertEqual(LSPSymbolKind.null.description, "Null")
-        XCTAssertEqual(LSPSymbolKind.enumMember.description, "EnumMember")
+        XCTAssertEqual(LSPSymbolKind.enumMember.description, "Case")
         XCTAssertEqual(LSPSymbolKind.struct.description, "Struct")
         XCTAssertEqual(LSPSymbolKind.event.description, "Event")
         XCTAssertEqual(LSPSymbolKind.operator.description, "Operator")

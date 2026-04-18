@@ -76,8 +76,10 @@ enum SwiftTestTool {
         // ✔ Test testFoo() passed after 0.001 seconds.
         // ✘ Test testBar() failed after 0.002 seconds.
         // Also handles: ✔ Test "name" passed after 0.001 seconds.
+        // Newer Swift Testing (v1743+) uses SF Symbols (e.g. 􁁛) instead of ✔✘◆,
+        // so we match any non-whitespace prefix before "Test".
         let swiftTestingPattern =
-            #"[✔✘◆] Test (.+?) (passed|failed) after (\d+\.\d+) seconds\."#
+            #"\S+\s+Test (.+?) (passed|failed) after (\d+\.\d+) seconds\."#
         let swiftTestingRegex = try? NSRegularExpression(pattern: swiftTestingPattern)
 
         // Collect context lines between "started" and the result line.
@@ -92,7 +94,9 @@ enum SwiftTestTool {
 
             // Detect "started" markers — begin collecting context
             let isXCTestStarted = line.contains("Test Case") && line.contains("started")
-            let isSwiftTestingStarted = line.contains("◇ Test") && line.contains("started")
+            // Swift Testing uses "◇ Test" (older) or SF Symbol + "Test" (newer, e.g. "􀟈  Test")
+            let isSwiftTestingStarted = line.contains("Test") && line.contains("started")
+                && !isXCTestStarted && !line.contains("Test Suite") && !line.contains("Test run")
             if isXCTestStarted || isSwiftTestingStarted {
                 pendingContextLines = []
                 isInsideTestCase = true
@@ -126,8 +130,9 @@ enum SwiftTestTool {
                 continue
             }
 
-            // Try Swift Testing result format
-            if let regex = swiftTestingRegex,
+            // Try Swift Testing result format (skip summary lines like "Test run with...")
+            if !line.contains("Test run"),
+               let regex = swiftTestingRegex,
                let match = regex.firstMatch(in: line, range: range),
                match.numberOfRanges == 4 {
                 let name = nsLine.substring(with: match.range(at: 1))
@@ -203,16 +208,22 @@ enum SwiftTestTool {
             }
         }
 
-        // Also try Swift Testing summary: "N test(s) passed, M failed"
-        // or "Test run with N tests passed."
-        let stSummaryPattern = #"(\d+) tests? passed"#
-        if let stRegex = try? NSRegularExpression(pattern: stSummaryPattern) {
-            let nsOutput = output as NSString
-            let fullRange = NSRange(location: 0, length: nsOutput.length)
-            if let match = stRegex.firstMatch(in: output, range: fullRange),
-               match.numberOfRanges >= 2 {
-                let passedCount = Int(nsOutput.substring(with: match.range(at: 1))) ?? 0
-                totalCount = max(totalCount, passedCount + failedCount)
+        // Also try Swift Testing summary formats:
+        //   "N test(s) passed"
+        //   "Test run with N test(s) in M suite(s) passed after S seconds."
+        let stSummaryPatterns = [
+            #"(\d+) tests? passed"#,
+            #"Test run with (\d+) tests? in \d+ suites? passed"#,
+        ]
+        for pattern in stSummaryPatterns {
+            if let stRegex = try? NSRegularExpression(pattern: pattern) {
+                let nsOutput = output as NSString
+                let fullRange = NSRange(location: 0, length: nsOutput.length)
+                if let match = stRegex.firstMatch(in: output, range: fullRange),
+                   match.numberOfRanges >= 2 {
+                    let passedCount = Int(nsOutput.substring(with: match.range(at: 1))) ?? 0
+                    totalCount = max(totalCount, passedCount + failedCount)
+                }
             }
         }
 
