@@ -74,7 +74,7 @@ enum SwiftTool {
                     ]),
                     "configuration": .object([
                         "type": .string("string"),
-                        "description": .string("Build configuration: \"debug\" or \"release\" (default: \"debug\", for build)"),
+                        "description": .string("Build configuration: \"debug\" or \"release\" (default: \"debug\", for build, test)"),
                     ]),
                     "target": .object([
                         "type": .string("string"),
@@ -87,6 +87,10 @@ enum SwiftTool {
                     "parallel": .object([
                         "type": .string("boolean"),
                         "description": .string("Run tests in parallel (default: true, for test)"),
+                    ]),
+                    "timeoutSeconds": .object([
+                        "type": .string("integer"),
+                        "description": .string("REQUIRED for build and test. Maximum seconds to wait before killing the swift process and returning a timeout error. No default — the caller must pick a value appropriate for the project."),
                     ]),
                 ]),
                 "required": .array([.string("action")]),

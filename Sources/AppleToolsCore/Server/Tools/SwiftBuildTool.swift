@@ -38,6 +38,14 @@ enum SwiftBuildTool {
             throw MCPError.invalidParams("Missing required argument: packagePath")
         }
 
+        guard let timeoutSeconds = args["timeoutSeconds"]?.intValue
+            ?? args["timeoutSeconds"]?.doubleValue.map({ Int($0) }) else {
+            throw MCPError.invalidParams("Missing required argument: timeoutSeconds (integer, seconds)")
+        }
+        guard timeoutSeconds > 0 else {
+            throw MCPError.invalidParams("timeoutSeconds must be > 0")
+        }
+
         let configuration = args["configuration"]?.stringValue ?? "debug"
         guard configuration == "debug" || configuration == "release" else {
             throw MCPError.invalidParams("configuration must be \"debug\" or \"release\"")
@@ -49,20 +57,31 @@ enum SwiftBuildTool {
             cmdArgs.append(contentsOf: ["--target", target])
         }
 
-        let result = try await ShellCommand.run(
-            "/usr/bin/swift",
-            arguments: cmdArgs,
-            workingDirectory: packagePath
-        )
+        do {
+            let result = try await ShellCommand.run(
+                Toolchain.swiftPath,
+                arguments: cmdArgs,
+                workingDirectory: packagePath,
+                timeout: TimeInterval(timeoutSeconds)
+            )
 
-        let parsed = parseBuildOutput(result.output, exitCode: result.exitCode)
-        let response = formatBuildResult(parsed)
-        let isError = !parsed.succeeded
+            let parsed = parseBuildOutput(result.output, exitCode: result.exitCode)
+            let response = formatBuildResult(parsed)
+            let isError = !parsed.succeeded
 
-        return .init(
-            content: [.text(text: response, annotations: nil, _meta: nil)],
-            isError: isError
-        )
+            return .init(
+                content: [.text(text: response, annotations: nil, _meta: nil)],
+                isError: isError
+            )
+        } catch let error as AppleToolsError {
+            if case .processTimedOut(let reason) = error {
+                return .init(
+                    content: [.text(text: "Build timed out: \(reason)", annotations: nil, _meta: nil)],
+                    isError: true
+                )
+            }
+            throw error
+        }
     }
 
     // MARK: - Parsing

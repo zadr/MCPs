@@ -9,6 +9,7 @@ enum AppleToolsError: LocalizedError, Sendable {
     case invalidArgument(name: String, expected: String)
     case missingRequiredArgument(String)
     case processSpawnFailed(String)
+    case processTimedOut(String)
 
     var errorDescription: String? {
         switch self {
@@ -28,6 +29,8 @@ enum AppleToolsError: LocalizedError, Sendable {
             return "Missing required argument: \(name)"
         case .processSpawnFailed(let reason):
             return "Failed to spawn process: \(reason)"
+        case .processTimedOut(let reason):
+            return "Process timed out: \(reason)"
         }
     }
 }
