@@ -2,6 +2,7 @@ import AppleToolsCore
 import MCP
 import Logging
 import Foundation
+import Dispatch
 
 LoggingSystem.bootstrap { label in
     var handler = StreamLogHandler.standardError(label: label)
@@ -9,6 +10,30 @@ LoggingSystem.bootstrap { label in
     return handler
 }
 let logger = Logger(label: "apple-tools-mcp")
+
+// Install signal handlers before any child can be spawned so shutdown
+// always reaps. SIG_IGN keeps the default disposition from killing us
+// before DispatchSourceSignal observes the signal.
+let shutdownSignals: [Int32] = [SIGTERM, SIGINT, SIGHUP]
+var signalSources: [DispatchSourceSignal] = []
+for sig in shutdownSignals {
+    signal(sig, SIG_IGN)
+    let source = DispatchSource.makeSignalSource(signal: sig, queue: .global())
+    source.setEventHandler {
+        let count = ChildProcessRegistry.snapshot().count
+        logger.warning("apple-tools-mcp received signal \(sig); reaping \(count) child process group(s)")
+        EventLog.write(event: "server_shutdown", [
+            ("reason", "signal"),
+            ("signal", Int(sig)),
+            ("inflight_children", count),
+        ])
+        terminateAllChildProcessGroups()
+        // _exit, not exit: atexit handlers can deadlock when stderr is gone.
+        _exit(0)
+    }
+    source.resume()
+    signalSources.append(source)
+}
 
 let lspService = SourceKitLSPService(logger: logger)
 
@@ -23,14 +48,40 @@ let server = Server(
 
 await ToolRegistry.registerAll(on: server, lspService: lspService)
 
-let transport = StdioTransport(logger: logger)
+// Custom transport — the SDK's StdioTransport polls stdin with Task.sleep
+// on EAGAIN and saturates the cooperative pool. See DispatchStdioTransport.
+let transport = DispatchStdioTransport(logger: logger)
 
 logger.info("apple-tools-mcp starting")
+EventLog.write(event: "server_started", [
+    ("version", "0.1.0"),
+    ("argv0", CommandLine.arguments.first ?? ""),
+])
 
-try await server.start(transport: transport)
-
-// Keep alive — server.start returns when the transport disconnects,
-// but add a fallback sleep in case it returns early.
-while !Task.isCancelled {
-    try await Task.sleep(for: .seconds(60 * 60 * 24))
+do {
+    try await server.start(transport: transport)
+} catch {
+    logger.error("apple-tools-mcp server.start threw: \(error)")
+    EventLog.write(event: "server_shutdown", [
+        ("reason", "server_start_threw"),
+        ("error", String(describing: error)),
+    ])
+    terminateAllChildProcessGroups()
+    _exit(1)
 }
+
+// server.start() returns once the transport is wired; waitUntilCompleted
+// blocks until the SDK's receive loop exits (transport EOF, error, stop()).
+await server.waitUntilCompleted()
+
+logger.info("apple-tools-mcp transport completed; shutting down")
+let inflight = ChildProcessRegistry.snapshot().count
+if inflight > 0 {
+    logger.warning("apple-tools-mcp shutting down with \(inflight) child process group(s) still running; reaping")
+    terminateAllChildProcessGroups()
+}
+EventLog.write(event: "server_shutdown", [
+    ("reason", "transport_completed"),
+    ("inflight_children", inflight),
+])
+_exit(0)
