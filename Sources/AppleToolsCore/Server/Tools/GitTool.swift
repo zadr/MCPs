@@ -42,8 +42,11 @@ enum GitTool {
                             .string("worktree_list"),
                             .string("worktree_add"),
                             .string("worktree_remove"),
+                            .string("worktree_prune"),
+                            .string("branch_prune"),
+                            .string("branch_find_duplicates"),
                         ]),
-                        "description": .string("The git action to perform. One of: init, status, log, diff, blame, branch_info, merge_analysis, show, tag, remote, add, commit, push, pull, checkout, reset, stash, merge, rebase, cherry_pick, branch_create, branch_delete, branch_rename, worktree_list, worktree_add, worktree_remove"),
+                        "description": .string("The git action to perform. One of: init, status, log, diff, blame, branch_info, merge_analysis, show, tag, remote, add, commit, push, pull, checkout, reset, stash, merge, rebase, cherry_pick, branch_create, branch_delete, branch_rename, worktree_list, worktree_add, worktree_remove, worktree_prune, branch_prune, branch_find_duplicates"),
                     ]),
                     "repoPath": .object([
                         "type": .string("string"),
@@ -211,6 +214,11 @@ enum GitTool {
                         "type": .string("string"),
                         "description": .string("Path for the worktree directory (for worktree_add, worktree_remove)"),
                     ]),
+                    // cleanup params
+                    "baseBranch": .object([
+                        "type": .string("string"),
+                        "description": .string("Base branch for merge checks (for worktree_prune, branch_prune; default 'main')"),
+                    ]),
                 ]),
                 "required": .array([.string("action"), .string("repoPath")]),
             ]),
@@ -280,9 +288,15 @@ enum GitTool {
             return try await handleWorktreeAdd(args: args, repoPath: repoPath)
         case "worktree_remove":
             return try await handleWorktreeRemove(args: args, repoPath: repoPath)
+        case "worktree_prune":
+            return try await handleWorktreePrune(args: args, repoPath: repoPath)
+        case "branch_prune":
+            return try await handleBranchPrune(args: args, repoPath: repoPath)
+        case "branch_find_duplicates":
+            return try await handleBranchFindDuplicates(args: args, repoPath: repoPath)
         default:
             throw MCPError.invalidParams(
-                "Unknown action: \(action). Valid actions: init, status, log, diff, blame, branch_info, merge_analysis, show, tag, remote, add, commit, push, pull, checkout, reset, stash, merge, rebase, cherry_pick, branch_create, branch_delete, branch_rename, worktree_list, worktree_add, worktree_remove"
+                "Unknown action: \(action). Valid actions: init, status, log, diff, blame, branch_info, merge_analysis, show, tag, remote, add, commit, push, pull, checkout, reset, stash, merge, rebase, cherry_pick, branch_create, branch_delete, branch_rename, worktree_list, worktree_add, worktree_remove, worktree_prune, branch_prune, branch_find_duplicates"
             )
         }
     }
@@ -1133,6 +1147,228 @@ enum GitTool {
             return errorResult("git worktree remove failed:\n\(result.output)")
         }
         return textResult(result.output)
+    }
+
+    // MARK: - Worktree Prune
+
+    private static func handleWorktreePrune(args: [String: Value], repoPath: String) async throws -> CallTool.Result {
+        let baseBranch = args["baseBranch"]?.stringValue ?? "main"
+        let force = args["force"]?.boolValue ?? false
+
+        // Get worktree list in porcelain format
+        let listResult = try await git(["-C", repoPath, "worktree", "list", "--porcelain"])
+        if listResult.exitCode != 0 {
+            return errorResult("git worktree list failed:\n\(listResult.output)")
+        }
+
+        let worktrees = parseWorktreePorcelain(listResult.output)
+        var removed: [String] = []
+        var skipped: [String] = []
+        var errors: [String] = []
+
+        for worktree in worktrees {
+            guard let branch = worktree.branch else { continue }
+            guard !worktree.isMain else { continue }
+
+            // Check if branch is merged into baseBranch
+            let mergedResult = try await git(["-C", repoPath, "branch", "--merged", baseBranch])
+            let mergedBranches = mergedResult.output
+                .components(separatedBy: "\n")
+                .map { $0.trimmingCharacters(in: .whitespaces).dropFirst().trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+
+            if mergedBranches.contains(branch) {
+                let removeFlag = force ? "--force" : ""
+                let removeArgs = removeFlag.isEmpty
+                    ? ["-C", repoPath, "worktree", "remove", worktree.path]
+                    : ["-C", repoPath, "worktree", "remove", removeFlag, worktree.path]
+                let removeResult = try await git(removeArgs)
+                if removeResult.exitCode == 0 {
+                    removed.append("\(branch) (\(worktree.path))")
+                } else {
+                    errors.append("\(branch): \(removeResult.output)")
+                }
+            } else {
+                skipped.append(branch)
+            }
+        }
+
+        var output = ""
+        if !removed.isEmpty {
+            output += "Worktrees removed: \(removed.joined(separator: ", "))\n"
+        }
+        if !skipped.isEmpty {
+            output += "Worktrees skipped (not merged): \(skipped.joined(separator: ", "))\n"
+        }
+        if !errors.isEmpty {
+            output += "Errors: \(errors.joined(separator: "; "))"
+        }
+        if output.isEmpty {
+            output = "No worktrees to prune."
+        }
+        return textResult(output.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private static func parseWorktreePorcelain(_ output: String) -> [(path: String, branch: String?, isMain: Bool)] {
+        var worktrees: [(path: String, branch: String?, isMain: Bool)] = []
+        let lines = output.components(separatedBy: "\n")
+        var i = 0
+        var isFirstWorktree = true
+
+        while i < lines.count {
+            let line = lines[i].trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("worktree ") {
+                let path = String(line.dropFirst("worktree ".count))
+                var branch: String?
+                var isBranch = true
+
+                i += 1
+                while i < lines.count {
+                    let nextLine = lines[i].trimmingCharacters(in: .whitespaces)
+                    if nextLine.hasPrefix("branch ") {
+                        let refPath = String(nextLine.dropFirst("branch ".count))
+                        branch = refPath.hasPrefix("refs/heads/")
+                            ? String(refPath.dropFirst("refs/heads/".count))
+                            : refPath
+                        i += 1
+                        break
+                    } else if nextLine == "detached" {
+                        isBranch = false
+                        i += 1
+                        break
+                    } else if nextLine.hasPrefix("worktree ") || nextLine.isEmpty {
+                        break
+                    } else {
+                        i += 1
+                    }
+                }
+
+                if isBranch && !isFirstWorktree {
+                    worktrees.append((path: path, branch: branch, isMain: false))
+                } else if isFirstWorktree {
+                    isFirstWorktree = false
+                }
+            } else {
+                i += 1
+            }
+        }
+
+        return worktrees
+    }
+
+    // MARK: - Branch Prune
+
+    private static func handleBranchPrune(args: [String: Value], repoPath: String) async throws -> CallTool.Result {
+        let baseBranch = args["baseBranch"]?.stringValue ?? "main"
+        let force = args["force"]?.boolValue ?? false
+
+        // Get current branch
+        let currentResult = try await git(["-C", repoPath, "rev-parse", "--abbrev-ref", "HEAD"])
+        let currentBranch = currentResult.output.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Get branches checked out in worktrees
+        let worktreeListResult = try await git(["-C", repoPath, "worktree", "list", "--porcelain"])
+        let worktreeBranches = parseWorktreePorcelain(worktreeListResult.output)
+            .compactMap { $0.branch }
+
+        // Get all merged branches
+        let mergedResult = try await git(["-C", repoPath, "branch", "--merged", baseBranch])
+        let mergedBranches = mergedResult.output
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces).dropFirst().trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+
+        let protected = Set(["main", "master", "develop", currentBranch] + worktreeBranches)
+        var removed: [String] = []
+        var skipped: [String] = []
+
+        for branch in mergedBranches {
+            if protected.contains(branch) {
+                skipped.append(branch)
+            } else {
+                let flag = force ? "-D" : "-d"
+                let deleteResult = try await git(["-C", repoPath, "branch", flag, branch])
+                if deleteResult.exitCode == 0 {
+                    removed.append(branch)
+                } else {
+                    skipped.append(branch)
+                }
+            }
+        }
+
+        var output = ""
+        if !removed.isEmpty {
+            output += "Branches removed: \(removed.joined(separator: ", "))\n"
+        }
+        if !skipped.isEmpty {
+            output += "Branches protected/kept: \(skipped.joined(separator: ", "))"
+        }
+        if output.isEmpty {
+            output = "No branches to prune."
+        }
+        return textResult(output.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    // MARK: - Branch Find Duplicates
+
+    private static func handleBranchFindDuplicates(args: [String: Value], repoPath: String) async throws -> CallTool.Result {
+        // Get all branches
+        let branchResult = try await git(["-C", repoPath, "branch", "--list"])
+        if branchResult.exitCode != 0 {
+            return errorResult("git branch failed:\n\(branchResult.output)")
+        }
+
+        let branches = branchResult.output
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces).dropFirst().trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+
+        guard branches.count > 1 else {
+            return textResult("Only one or no branches found. No duplicates to detect.")
+        }
+
+        var duplicates: [String: [String]] = [:]
+
+        for i in 0..<branches.count {
+            for j in (i+1)..<branches.count {
+                let branchA = branches[i]
+                let branchB = branches[j]
+
+                let cherryResult = try await git(["-C", repoPath, "cherry", "-v", branchB, branchA])
+                let duplicateShas = cherryResult.output
+                    .components(separatedBy: "\n")
+                    .filter { $0.hasPrefix("-") }
+                    .compactMap { line -> String? in
+                        let parts = line.dropFirst().trimmingCharacters(in: .whitespaces).components(separatedBy: " ")
+                        return parts.first
+                    }
+
+                for sha in duplicateShas {
+                    if duplicates[sha] == nil {
+                        duplicates[sha] = []
+                    }
+                    duplicates[sha]?.append(contentsOf: [branchA, branchB])
+                }
+            }
+        }
+
+        guard !duplicates.isEmpty else {
+            return textResult("No duplicate commits found.")
+        }
+
+        var output = "Duplicate commits:\n"
+        for (sha, branchList) in duplicates.sorted(by: { $0.key < $1.key }) {
+            let uniqueBranches = Array(Set(branchList)).sorted()
+            let shortSha = String(sha.prefix(8))
+
+            // Get commit subject
+            let logResult = try await git(["-C", repoPath, "log", "-1", "--format=%s", sha])
+            let subject = logResult.output.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            output += "  \(shortSha) \"\(subject)\" — on: \(uniqueBranches.joined(separator: ", "))\n"
+        }
+
+        return textResult(output.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     // MARK: - Helpers
