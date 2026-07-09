@@ -92,6 +92,10 @@ enum SwiftTool {
                         "type": .string("integer"),
                         "description": .string("REQUIRED for build and test. Maximum seconds to wait before killing the swift process and returning a timeout error. No default — the caller must pick a value appropriate for the project."),
                     ]),
+                    "traceLog": .object([
+                        "type": .string("string"),
+                        "description": .string("Absolute path to write an exhaustive JSONL trace log to for debugging. Enables tracing process-wide once set."),
+                    ]),
                 ]),
                 "required": .array([.string("action")]),
             ]),
@@ -103,37 +107,55 @@ enum SwiftTool {
         _ arguments: [String: Value]?,
         lspService: SourceKitLSPService
     ) async throws -> CallTool.Result {
+        if let traceLogPath = arguments?["traceLog"]?.stringValue, !traceLogPath.isEmpty {
+            TraceLog.enable(path: traceLogPath)
+        }
+        TraceLog.enter([("arguments", String(describing: arguments))])
         guard let args = arguments,
               let action = args["action"]?.stringValue else {
+            TraceLog.point("missing-action")
             throw MCPError.invalidParams("Missing required argument: action")
         }
 
         switch action {
         case "hover":
+            TraceLog.point("action:hover")
             return try await SwiftHoverTool.handle(arguments, lspService: lspService)
         case "definition":
+            TraceLog.point("action:definition")
             return try await SwiftDefinitionTool.handle(arguments, lspService: lspService)
         case "references":
+            TraceLog.point("action:references")
             return try await SwiftReferencesTool.handle(arguments, lspService: lspService)
         case "completion":
+            TraceLog.point("action:completion")
             return try await SwiftCompletionTool.handle(arguments, lspService: lspService)
         case "diagnostics":
+            TraceLog.point("action:diagnostics")
             return try await SwiftDiagnosticsTool.handle(arguments, lspService: lspService)
         case "document_symbols":
+            TraceLog.point("action:document_symbols")
             return try await SwiftDocumentSymbolsTool.handle(arguments, lspService: lspService)
         case "workspace_symbols":
+            TraceLog.point("action:workspace_symbols")
             return try await SwiftWorkspaceSymbolsTool.handle(arguments, lspService: lspService)
         case "format":
+            TraceLog.point("action:format")
             return try await SwiftFormatTool.handle(arguments, lspService: lspService)
         case "code_actions":
+            TraceLog.point("action:code_actions")
             return try await SwiftCodeActionsTool.handle(arguments, lspService: lspService)
         case "rename":
+            TraceLog.point("action:rename")
             return try await SwiftRenameTool.handle(arguments, lspService: lspService)
         case "build":
+            TraceLog.point("action:build")
             return try await SwiftBuildTool.handle(arguments)
         case "test":
+            TraceLog.point("action:test")
             return try await SwiftTestTool.handle(arguments)
         default:
+            TraceLog.point("unknown-action", [("action", action)])
             throw MCPError.invalidParams("Unknown action: \(action). Valid actions: hover, definition, references, completion, diagnostics, document_symbols, workspace_symbols, format, code_actions, rename, build, test")
         }
     }

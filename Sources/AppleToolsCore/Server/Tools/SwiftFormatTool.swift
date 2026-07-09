@@ -25,18 +25,23 @@ enum SwiftFormatTool {
         _ arguments: [String: Value]?,
         lspService: SourceKitLSPService
     ) async throws -> CallTool.Result {
+        TraceLog.enter([("arguments", String(describing: arguments))])
         guard let args = arguments,
               let filePath = args["filePath"]?.stringValue else {
+            TraceLog.point("missing-filePath")
             throw MCPError.invalidParams("Missing required argument: filePath")
         }
+        TraceLog.point("args-ok", [("filePath", filePath)])
 
         let uri = FileURI.fromPath(filePath)
         let edits = try await lspService.formatting(uri: uri)
 
         let text: String
         if edits.isEmpty {
+            TraceLog.point("edits-empty")
             text = "File is already well-formatted."
         } else {
+            TraceLog.point("edits-present", [("count", edits.count)])
             var lines: [String] = []
             lines.append("Formatting produced \(edits.count) edit(s):")
             lines.append("")
@@ -55,6 +60,7 @@ enum SwiftFormatTool {
             text = lines.joined(separator: "\n")
         }
 
+        TraceLog.exit([("textLength", text.count)])
         return .init(content: [.text(text: text, annotations: nil, _meta: nil)], isError: false)
     }
 }

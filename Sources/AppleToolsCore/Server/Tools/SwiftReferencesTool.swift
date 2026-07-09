@@ -37,21 +37,27 @@ enum SwiftReferencesTool {
         _ arguments: [String: Value]?,
         lspService: SourceKitLSPService
     ) async throws -> CallTool.Result {
+        TraceLog.enter([("arguments", String(describing: arguments))])
         guard let args = arguments,
               let filePath = args["filePath"]?.stringValue else {
+            TraceLog.point("missing-filePath")
             throw MCPError.invalidParams("Missing required argument: filePath")
         }
         guard let line = args["line"]?.intValue ?? args["line"]?.doubleValue.map({ Int($0) }) else {
+            TraceLog.point("missing-line")
             throw MCPError.invalidParams("Missing required argument: line")
         }
         guard let character = args["character"]?.intValue ?? args["character"]?.doubleValue.map({ Int($0) }) else {
+            TraceLog.point("missing-character")
             throw MCPError.invalidParams("Missing required argument: character")
         }
 
         let includeDeclaration: Bool
         if let val = args["includeDeclaration"]?.boolValue {
+            TraceLog.point("includeDeclaration-explicit", [("value", val)])
             includeDeclaration = val
         } else {
+            TraceLog.point("includeDeclaration-default")
             includeDeclaration = true
         }
 
@@ -65,8 +71,10 @@ enum SwiftReferencesTool {
 
         let text: String
         if locations.isEmpty {
+            TraceLog.point("locations-empty")
             text = "No references found at this position."
         } else {
+            TraceLog.point("locations-present", [("count", locations.count)])
             let lines = locations.map { location -> String in
                 let path = FileURI.toPath(location.uri)
                 let startLine = location.range.start.line
@@ -76,6 +84,7 @@ enum SwiftReferencesTool {
             text = lines.joined(separator: "\n")
         }
 
+        TraceLog.exit([("textLength", text.count)])
         return .init(content: [.text(text: text, annotations: nil, _meta: nil)], isError: false)
     }
 }

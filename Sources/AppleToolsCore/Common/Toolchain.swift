@@ -4,6 +4,7 @@ import Foundation
 /// Falls back to `/usr/bin/swift` if resolution fails.
 enum Toolchain {
     private static let cachedSwiftPath: String = {
+        TraceLog.enter()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
         process.arguments = ["-p"]
@@ -14,11 +15,13 @@ enum Toolchain {
         do {
             try process.run()
         } catch {
+            TraceLog.point("run-failed", [("error", String(describing: error))])
             return "/usr/bin/swift"
         }
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
+            TraceLog.point("nonzero-status", [("status", process.terminationStatus)])
             return "/usr/bin/swift"
         }
 
@@ -26,14 +29,22 @@ enum Toolchain {
         guard let developerDir = String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines),
             !developerDir.isEmpty else {
+            TraceLog.point("empty-developerDir")
             return "/usr/bin/swift"
         }
 
         let candidate = "\(developerDir)/usr/bin/swift"
-        return FileManager.default.isExecutableFile(atPath: candidate)
-            ? candidate
-            : "/usr/bin/swift"
+        if FileManager.default.isExecutableFile(atPath: candidate) {
+            TraceLog.point("candidate-executable", [("candidate", candidate)])
+            return candidate
+        } else {
+            TraceLog.point("candidate-not-executable", [("candidate", candidate)])
+            return "/usr/bin/swift"
+        }
     }()
 
-    static var swiftPath: String { cachedSwiftPath }
+    static var swiftPath: String {
+        TraceLog.enter()
+        return cachedSwiftPath
+    }
 }

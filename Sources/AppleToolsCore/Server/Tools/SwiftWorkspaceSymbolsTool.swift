@@ -26,17 +26,22 @@ enum SwiftWorkspaceSymbolsTool {
         _ arguments: [String: Value]?,
         lspService: SourceKitLSPService
     ) async throws -> CallTool.Result {
+        TraceLog.enter([("arguments", String(describing: arguments))])
         guard let args = arguments,
               let query = args["query"]?.stringValue else {
+            TraceLog.point("missing-query")
             throw MCPError.invalidParams("Missing required argument: query")
         }
+        TraceLog.point("args-ok", [("query", query)])
 
         let symbols = try await lspService.workspaceSymbols(query: query)
 
         let text: String
         if symbols.isEmpty {
+            TraceLog.point("symbols-empty")
             text = "No symbols found matching \"\(query)\"."
         } else {
+            TraceLog.point("symbols-present", [("count", symbols.count)])
             var lines: [String] = []
             for symbol in symbols {
                 let kindName = LSPSymbolKind(rawValue: symbol.kind)?.description ?? "Unknown"
@@ -50,6 +55,7 @@ enum SwiftWorkspaceSymbolsTool {
             text = lines.joined(separator: "\n")
         }
 
+        TraceLog.exit([("textLength", text.count)])
         return .init(content: [.text(text: text, annotations: nil, _meta: nil)], isError: false)
     }
 }

@@ -29,33 +29,41 @@ enum SwiftTestTool {
     // MARK: - Handle
 
     static func handle(_ arguments: [String: Value]?) async throws -> CallTool.Result {
+        TraceLog.enter([("arguments", String(describing: arguments))])
         guard let args = arguments,
               let packagePath = args["packagePath"]?.stringValue else {
+            TraceLog.point("missing-packagePath")
             throw MCPError.invalidParams("Missing required argument: packagePath")
         }
 
         guard let timeoutSeconds = args["timeoutSeconds"]?.intValue
             ?? args["timeoutSeconds"]?.doubleValue.map({ Int($0) }) else {
+            TraceLog.point("missing-timeoutSeconds")
             throw MCPError.invalidParams("Missing required argument: timeoutSeconds (integer, seconds)")
         }
         guard timeoutSeconds > 0 else {
+            TraceLog.point("timeout-nonpositive", [("timeoutSeconds", timeoutSeconds)])
             throw MCPError.invalidParams("timeoutSeconds must be > 0")
         }
 
         let configuration = args["configuration"]?.stringValue ?? "debug"
         guard configuration == "debug" || configuration == "release" else {
+            TraceLog.point("bad-configuration", [("configuration", configuration)])
             throw MCPError.invalidParams("configuration must be \"debug\" or \"release\"")
         }
 
         var cmdArgs = ["test", "-c", configuration]
 
         if let filter = args["filter"]?.stringValue {
+            TraceLog.point("filter-set", [("filter", filter)])
             cmdArgs.append(contentsOf: ["--filter", filter])
         }
 
         let parallel = args["parallel"]?.boolValue ?? true
+        TraceLog.point("parallel-resolved", [("parallel", parallel)])
         cmdArgs.append(parallel ? "--parallel" : "--no-parallel")
 
+        TraceLog.point("running", [("packagePath", packagePath), ("timeoutSeconds", timeoutSeconds), ("cmdArgs", String(describing: cmdArgs))])
         do {
             let result = try await ShellCommand.run(
                 Toolchain.swiftPath,
@@ -68,17 +76,20 @@ enum SwiftTestTool {
             let response = formatTestResult(parsed)
             let isError = !parsed.succeeded
 
+            TraceLog.exit([("exitCode", result.exitCode), ("isError", isError)])
             return .init(
                 content: [.text(text: response, annotations: nil, _meta: nil)],
                 isError: isError
             )
         } catch let error as AppleToolsError {
             if case .processTimedOut(let reason) = error {
+                TraceLog.point("process-timed-out", [("reason", reason)])
                 return .init(
                     content: [.text(text: "Test run timed out: \(reason)", annotations: nil, _meta: nil)],
                     isError: true
                 )
             }
+            TraceLog.point("throwing", [("error", String(describing: error))])
             throw error
         }
     }
@@ -86,6 +97,7 @@ enum SwiftTestTool {
     // MARK: - Parsing
 
     static func parseTestOutput(_ output: String, exitCode: Int32) -> TestResult {
+        TraceLog.enter([("outputLength", output.count), ("exitCode", exitCode)])
         let lines = output.components(separatedBy: "\n")
         var testCases: [TestCase] = []
 
@@ -109,9 +121,13 @@ enum SwiftTestTool {
         // Collect context lines between "started" and the result line.
         // In XCTest, failure details appear BEFORE the "failed" result line.
         // In Swift Testing, they can appear BEFORE the result line too.
+        if xcTestRegex == nil { TraceLog.point("xctest-regex-nil") }
+        if swiftTestingRegex == nil { TraceLog.point("swifttesting-regex-nil") }
+
         var pendingContextLines: [String] = []
         var isInsideTestCase = false
 
+        TraceLog.point("scan-lines", [("count", lines.count)])
         for line in lines {
             let nsLine = line as NSString
             let range = NSRange(location: 0, length: nsLine.length)
@@ -122,6 +138,7 @@ enum SwiftTestTool {
             let isSwiftTestingStarted = line.contains("Test") && line.contains("started")
                 && !isXCTestStarted && !line.contains("Test Suite") && !line.contains("Test run")
             if isXCTestStarted || isSwiftTestingStarted {
+                TraceLog.point("test-started")
                 pendingContextLines = []
                 isInsideTestCase = true
                 continue
@@ -131,6 +148,7 @@ enum SwiftTestTool {
             if let regex = xcTestRegex,
                let match = regex.firstMatch(in: line, range: range),
                match.numberOfRanges == 5 {
+                TraceLog.point("xctest-result")
                 let module = nsLine.substring(with: match.range(at: 1))
                 let method = nsLine.substring(with: match.range(at: 2))
                 let statusStr = nsLine.substring(with: match.range(at: 3))
@@ -159,6 +177,7 @@ enum SwiftTestTool {
                let regex = swiftTestingRegex,
                let match = regex.firstMatch(in: line, range: range),
                match.numberOfRanges == 4 {
+                TraceLog.point("swifttesting-result")
                 let name = nsLine.substring(with: match.range(at: 1))
                     .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
                 let statusStr = nsLine.substring(with: match.range(at: 2))
@@ -209,6 +228,7 @@ enum SwiftTestTool {
                 }
             }
         }
+        TraceLog.point("parsed-cases", [("testCases", testCases.count), ("parallelTotal", parallelTotal)])
 
         // Parse summary line: "Executed N test(s), with M failure(s) ... in S (seconds)"
         var totalCount = testCases.count
@@ -222,6 +242,7 @@ enum SwiftTestTool {
             // Use the last match — the overall summary, not a per-suite summary
             let matches = summaryRegex.matches(in: output, range: fullRange)
             if let match = matches.last, match.numberOfRanges >= 4 {
+                TraceLog.point("xctest-summary-matched")
                 if let t = Int(nsOutput.substring(with: match.range(at: 1))) {
                     totalCount = max(totalCount, t)
                 }
@@ -245,6 +266,7 @@ enum SwiftTestTool {
                 let fullRange = NSRange(location: 0, length: nsOutput.length)
                 if let match = stRegex.firstMatch(in: output, range: fullRange),
                    match.numberOfRanges >= 2 {
+                    TraceLog.point("swifttesting-summary-matched")
                     let passedCount = Int(nsOutput.substring(with: match.range(at: 1))) ?? 0
                     totalCount = max(totalCount, passedCount + failedCount)
                 }
@@ -256,6 +278,7 @@ enum SwiftTestTool {
         totalCount = max(totalCount, parallelTotal)
 
         let succeeded = exitCode == 0
+        TraceLog.exit([("succeeded", succeeded), ("totalCount", totalCount), ("failedCount", failedCount)])
         return TestResult(
             succeeded: succeeded,
             testCases: testCases,
@@ -269,14 +292,17 @@ enum SwiftTestTool {
     // MARK: - Formatting
 
     static func formatTestResult(_ result: TestResult) -> String {
+        TraceLog.enter([("succeeded", result.succeeded), ("totalCount", result.totalCount), ("failedCount", result.failedCount)])
         var parts: [String] = []
 
         // Summary line
         let passedCount = result.totalCount - result.failedCount
         if result.succeeded {
+            TraceLog.point("succeeded")
             let summary = "\(result.totalCount) test\(result.totalCount == 1 ? "" : "s") passed."
             parts.append(summary)
         } else {
+            TraceLog.point("failed")
             let summary = "\(passedCount) passed, \(result.failedCount) failed"
                 + " (\(result.totalCount) total)."
             parts.append(summary)
@@ -284,6 +310,7 @@ enum SwiftTestTool {
 
         // If all passed, we're done -- keep it short
         if result.succeeded && result.failedCount == 0 {
+            TraceLog.exit([("allPassed", true)])
             return parts.joined(separator: "\n")
         }
 
@@ -298,6 +325,7 @@ enum SwiftTestTool {
             let hasAnyGroup = groups.contains { $0.tests.count > 1 }
 
             if hasAnyGroup {
+                TraceLog.point("grouped-failures", [("groupCount", groups.count)])
                 // Grouped format: message as header, tests listed underneath
                 for group in groups {
                     let countLabel = group.tests.count == 1 ? "1 test" : "\(group.tests.count) tests"
@@ -308,6 +336,7 @@ enum SwiftTestTool {
                     }
                 }
             } else {
+                TraceLog.point("individual-failures", [("count", failures.count)])
                 // Individual format: test name as header, message underneath
                 for tc in failures {
                     parts.append("  FAIL \(tc.name)")
@@ -323,6 +352,7 @@ enum SwiftTestTool {
 
         // Fallback: if tests failed but we parsed nothing, include filtered raw output
         if !result.succeeded && failures.isEmpty && result.testCases.isEmpty {
+            TraceLog.point("fallback-raw-output")
             let filtered = stripBuildOutput(result.rawOutput)
             if !filtered.isEmpty {
                 parts.append("")
@@ -331,6 +361,7 @@ enum SwiftTestTool {
             }
         }
 
+        TraceLog.exit([("partCount", parts.count)])
         return parts.joined(separator: "\n")
     }
 
@@ -346,7 +377,9 @@ enum SwiftTestTool {
     /// and trims whitespace so that the same logical assertion from different
     /// test sites gets grouped together.
     static func normalizeFailureMessage(_ message: String?) -> String {
+        TraceLog.enter([("message", message)])
         guard let message = message, !message.isEmpty else {
+            TraceLog.point("empty-message")
             return "Unknown failure"
         }
 
@@ -378,12 +411,14 @@ enum SwiftTestTool {
         }.filter { !$0.isEmpty }
 
         let joined = normalized.joined(separator: "\n")
+        TraceLog.exit([("resultLength", joined.count)])
         return joined.isEmpty ? "Unknown failure" : joined
     }
 
     /// Group failed test cases by their normalized failure message.
     /// Returns groups in order of first appearance, preserving test order within each group.
     static func groupFailuresByMessage(_ failures: [TestCase]) -> [FailureGroup] {
+        TraceLog.enter([("failures", failures.count)])
         var groupOrder: [String] = []
         var groupMap: [String: (displayMessage: String, tests: [TestCase])] = [:]
 
@@ -398,20 +433,26 @@ enum SwiftTestTool {
             }
         }
 
-        return groupOrder.compactMap { key in
+        let result = groupOrder.compactMap { key -> FailureGroup? in
             guard let entry = groupMap[key] else { return nil }
             return FailureGroup(displayMessage: entry.displayMessage, tests: entry.tests)
         }
+        TraceLog.exit([("groupCount", result.count)])
+        return result
     }
 
     // MARK: - Helpers
 
     private static func formatDuration(_ seconds: Double) -> String {
+        TraceLog.enter([("seconds", seconds)])
         if seconds < 1.0 {
+            TraceLog.point("sub-second")
             return String(format: "%.3fs", seconds)
         } else if seconds < 60.0 {
+            TraceLog.point("sub-minute")
             return String(format: "%.1fs", seconds)
         } else {
+            TraceLog.point("minutes")
             let mins = Int(seconds) / 60
             let secs = seconds - Double(mins * 60)
             return String(format: "%dm %.1fs", mins, secs)
@@ -420,6 +461,7 @@ enum SwiftTestTool {
 
     /// Strip build/compilation lines that precede actual test execution.
     private static func stripBuildOutput(_ output: String) -> String {
+        TraceLog.enter([("outputLength", output.count)])
         let lines = output.components(separatedBy: "\n")
         let noisePatterns: [String] = [
             "^Building for ",
@@ -440,8 +482,10 @@ enum SwiftTestTool {
         let result = filtered.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         let resultLines = result.components(separatedBy: "\n")
         if resultLines.count > 100 {
+            TraceLog.point("capped", [("total", resultLines.count)])
             return resultLines.prefix(100).joined(separator: "\n") + "\n... (\(resultLines.count - 100) more lines)"
         }
+        TraceLog.exit([("lineCount", resultLines.count)])
         return result
     }
 }

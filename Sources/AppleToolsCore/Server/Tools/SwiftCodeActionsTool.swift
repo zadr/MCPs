@@ -45,19 +45,24 @@ enum SwiftCodeActionsTool {
         _ arguments: [String: Value]?,
         lspService: SourceKitLSPService
     ) async throws -> CallTool.Result {
+        TraceLog.enter([("arguments", String(describing: arguments))])
         guard let args = arguments,
               let filePath = args["filePath"]?.stringValue else {
+            TraceLog.point("missing-filePath")
             throw MCPError.invalidParams("Missing required argument: filePath")
         }
         guard let startLine = args["startLine"]?.intValue ?? args["startLine"]?.doubleValue.map({ Int($0) }) else {
+            TraceLog.point("missing-startLine")
             throw MCPError.invalidParams("Missing required argument: startLine")
         }
         guard let startCharacter = args["startCharacter"]?.intValue ?? args["startCharacter"]?.doubleValue.map({ Int($0) }) else {
+            TraceLog.point("missing-startCharacter")
             throw MCPError.invalidParams("Missing required argument: startCharacter")
         }
 
         let endLine = args["endLine"]?.intValue ?? args["endLine"]?.doubleValue.map({ Int($0) }) ?? startLine
         let endCharacter = args["endCharacter"]?.intValue ?? args["endCharacter"]?.doubleValue.map({ Int($0) }) ?? startCharacter
+        TraceLog.point("range-resolved", [("startLine", startLine), ("startCharacter", startCharacter), ("endLine", endLine), ("endCharacter", endCharacter)])
 
         let uri = FileURI.fromPath(filePath)
         let range = LSPRange(
@@ -68,8 +73,10 @@ enum SwiftCodeActionsTool {
 
         let text: String
         if actions.isEmpty {
+            TraceLog.point("actions-empty")
             text = "No code actions available at this position."
         } else {
+            TraceLog.point("actions-present", [("count", actions.count)])
             var lines: [String] = []
             lines.append("Available code actions (\(actions.count)):")
             lines.append("")
@@ -87,6 +94,7 @@ enum SwiftCodeActionsTool {
             text = lines.joined(separator: "\n")
         }
 
+        TraceLog.exit([("textLength", text.count)])
         return .init(content: [.text(text: text, annotations: nil, _meta: nil)], isError: false)
     }
 }

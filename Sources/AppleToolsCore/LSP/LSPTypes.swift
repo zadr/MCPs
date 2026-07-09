@@ -79,6 +79,7 @@ struct ServerCapabilities: Codable, Sendable {
     }
 
     init(from decoder: Decoder) throws {
+        TraceLog.enter()
         let container = try decoder.container(keyedBy: CodingKeys.self)
         textDocumentSync = try container.decodeIfPresent(TextDocumentSyncValue.self, forKey: .textDocumentSync)
         hoverProvider = try container.decodeIfPresent(Bool.self, forKey: .hoverProvider)
@@ -104,21 +105,27 @@ enum TextDocumentSyncValue: Codable, Sendable {
     }
 
     init(from decoder: Decoder) throws {
+        TraceLog.enter()
         let container = try decoder.singleValueContainer()
         if let kind = try? container.decode(Int.self) {
+            TraceLog.point("decode-kind")
             self = .kind(kind)
         } else {
+            TraceLog.point("decode-options")
             let options = try container.decode(TextDocumentSyncOptions.self)
             self = .options(options)
         }
     }
 
     func encode(to encoder: Encoder) throws {
+        TraceLog.enter()
         var container = encoder.singleValueContainer()
         switch self {
         case .kind(let kind):
+            TraceLog.point("encode-kind")
             try container.encode(kind)
         case .options(let options):
+            TraceLog.point("encode-options")
             try container.encode(options)
         }
     }
@@ -134,21 +141,27 @@ enum CodeActionProviderValue: Codable, Sendable {
     }
 
     init(from decoder: Decoder) throws {
+        TraceLog.enter()
         let container = try decoder.singleValueContainer()
         if let b = try? container.decode(Bool.self) {
+            TraceLog.point("decode-bool")
             self = .bool(b)
         } else {
+            TraceLog.point("decode-options")
             let opts = try container.decode(CodeActionOptions.self)
             self = .options(opts)
         }
     }
 
     func encode(to encoder: Encoder) throws {
+        TraceLog.enter()
         var container = encoder.singleValueContainer()
         switch self {
         case .bool(let b):
+            TraceLog.point("encode-bool")
             try container.encode(b)
         case .options(let opts):
+            TraceLog.point("encode-options")
             try container.encode(opts)
         }
     }
@@ -164,21 +177,27 @@ enum RenameProviderValue: Codable, Sendable {
     }
 
     init(from decoder: Decoder) throws {
+        TraceLog.enter()
         let container = try decoder.singleValueContainer()
         if let b = try? container.decode(Bool.self) {
+            TraceLog.point("decode-bool")
             self = .bool(b)
         } else {
+            TraceLog.point("decode-options")
             let opts = try container.decode(RenameOptions.self)
             self = .options(opts)
         }
     }
 
     func encode(to encoder: Encoder) throws {
+        TraceLog.enter()
         var container = encoder.singleValueContainer()
         switch self {
         case .bool(let b):
+            TraceLog.point("encode-bool")
             try container.encode(b)
         case .options(let opts):
+            TraceLog.point("encode-options")
             try container.encode(opts)
         }
     }
@@ -192,21 +211,27 @@ enum FormattingProviderValue: Codable, Sendable {
     struct FormattingProviderOptions: Codable, Sendable {}
 
     init(from decoder: Decoder) throws {
+        TraceLog.enter()
         let container = try decoder.singleValueContainer()
         if let b = try? container.decode(Bool.self) {
+            TraceLog.point("decode-bool")
             self = .bool(b)
         } else {
+            TraceLog.point("decode-options")
             let opts = try container.decode(FormattingProviderOptions.self)
             self = .options(opts)
         }
     }
 
     func encode(to encoder: Encoder) throws {
+        TraceLog.enter()
         var container = encoder.singleValueContainer()
         switch self {
         case .bool(let b):
+            TraceLog.point("encode-bool")
             try container.encode(b)
         case .options(let opts):
+            TraceLog.point("encode-options")
             try container.encode(opts)
         }
     }
@@ -232,20 +257,25 @@ extension HoverResult: Codable {
     }
 
     init(from decoder: Decoder) throws {
+        TraceLog.enter()
         let container = try decoder.container(keyedBy: CodingKeys.self)
         range = try container.decodeIfPresent(LSPRange.self, forKey: .range)
 
         // contents can be MarkupContent (object with kind+value) or a plain string
         if let markup = try? container.decode(MarkupContent.self, forKey: .contents) {
+            TraceLog.point("contents-markup")
             contents = markup.value
         } else if let str = try? container.decode(String.self, forKey: .contents) {
+            TraceLog.point("contents-string")
             contents = str
         } else {
+            TraceLog.point("contents-empty")
             contents = ""
         }
     }
 
     func encode(to encoder: Encoder) throws {
+        TraceLog.enter()
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(MarkupContent(kind: "markdown", value: contents), forKey: .contents)
         try container.encodeIfPresent(range, forKey: .range)
@@ -278,21 +308,27 @@ enum CompletionDocumentation: Codable, Sendable {
     case markup(MarkupContent)
 
     init(from decoder: Decoder) throws {
+        TraceLog.enter()
         let container = try decoder.singleValueContainer()
         if let s = try? container.decode(String.self) {
+            TraceLog.point("decode-string")
             self = .string(s)
         } else {
+            TraceLog.point("decode-markup")
             let m = try container.decode(MarkupContent.self)
             self = .markup(m)
         }
     }
 
     func encode(to encoder: Encoder) throws {
+        TraceLog.enter()
         var container = encoder.singleValueContainer()
         switch self {
         case .string(let s):
+            TraceLog.point("encode-string")
             try container.encode(s)
         case .markup(let m):
+            TraceLog.point("encode-markup")
             try container.encode(m)
         }
     }

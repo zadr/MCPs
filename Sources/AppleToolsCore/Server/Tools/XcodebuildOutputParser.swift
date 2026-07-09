@@ -73,6 +73,7 @@ enum XcodebuildOutputParser {
     // MARK: - Build output parsing
 
     static func parseBuildOutput(_ output: String, exitCode: Int32) -> BuildResult {
+        TraceLog.enter([("outputLength", output.count), ("exitCode", exitCode)])
         var errors: [Diagnostic] = []
         var warnings: [Diagnostic] = []
         var notes: [Diagnostic] = []
@@ -92,9 +93,13 @@ enum XcodebuildOutputParser {
         if let regex = diagnosticRegex {
             let nsOutput = output as NSString
             let matches = regex.matches(in: output, range: NSRange(location: 0, length: nsOutput.length))
+            TraceLog.point("diagnostic-matches", [("count", matches.count)])
 
             for match in matches {
-                guard match.numberOfRanges == 6 else { continue }
+                guard match.numberOfRanges == 6 else {
+                    TraceLog.point("match-bad-ranges")
+                    continue
+                }
 
                 let file = nsOutput.substring(with: match.range(at: 1))
                 let lineStr = nsOutput.substring(with: match.range(at: 2))
@@ -105,6 +110,7 @@ enum XcodebuildOutputParser {
                 guard let line = Int(lineStr),
                       let column = Int(colStr),
                       let severity = Diagnostic.Severity(rawValue: severityStr) else {
+                    TraceLog.point("match-parse-failed")
                     continue
                 }
 
@@ -119,15 +125,19 @@ enum XcodebuildOutputParser {
                 case .note: notes.append(diagnostic)
                 }
             }
+        } else {
+            TraceLog.point("diagnostic-regex-nil")
         }
 
         // Parse linker errors
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("ld: ") {
+                TraceLog.point("linker-ld")
                 linkerErrors.append(LinkerError(message: trimmed))
             } else if trimmed.hasPrefix("Undefined symbols for architecture") ||
                         trimmed.hasPrefix("Undefined symbol:") {
+                TraceLog.point("linker-undefined")
                 linkerErrors.append(LinkerError(message: trimmed))
             }
         }
@@ -137,6 +147,7 @@ enum XcodebuildOutputParser {
         if let regex = standaloneErrorRegex, errors.isEmpty && linkerErrors.isEmpty {
             let nsOutput = output as NSString
             let matches = regex.matches(in: output, range: NSRange(location: 0, length: nsOutput.length))
+            TraceLog.point("standalone-error-branch", [("count", matches.count)])
             for match in matches {
                 guard match.numberOfRanges == 2 else { continue }
                 let message = nsOutput.substring(with: match.range(at: 1))
@@ -146,6 +157,7 @@ enum XcodebuildOutputParser {
         }
 
         let succeeded = exitCode == 0
+        TraceLog.exit([("succeeded", succeeded), ("errors", errors.count), ("warnings", warnings.count), ("linkerErrors", linkerErrors.count)])
         return BuildResult(
             succeeded: succeeded,
             errors: errors,
@@ -159,16 +171,20 @@ enum XcodebuildOutputParser {
     // MARK: - Build result formatting
 
     static func formatBuildResult(_ result: BuildResult, action: String = "Build") -> String {
+        TraceLog.enter([("action", action), ("succeeded", result.succeeded), ("errors", result.errors.count), ("warnings", result.warnings.count), ("linkerErrors", result.linkerErrors.count)])
         var parts: [String] = []
 
         // Summary line
         if result.succeeded {
             if result.warnings.isEmpty {
+                TraceLog.point("succeeded-clean")
                 parts.append("\(action) succeeded.")
             } else {
+                TraceLog.point("succeeded-with-warnings")
                 parts.append("\(action) succeeded with \(result.warnings.count) warning\(result.warnings.count == 1 ? "" : "s").")
             }
         } else {
+            TraceLog.point("failed")
             var counts: [String] = []
             let totalErrors = result.errors.count + result.linkerErrors.count
             if totalErrors > 0 {
@@ -186,6 +202,7 @@ enum XcodebuildOutputParser {
 
         // Errors section — group by file
         if !result.errors.isEmpty {
+            TraceLog.point("errors-section", [("count", result.errors.count)])
             parts.append("")
             parts.append("Errors:")
 
@@ -223,6 +240,7 @@ enum XcodebuildOutputParser {
 
         // Linker errors section
         if !result.linkerErrors.isEmpty {
+            TraceLog.point("linker-errors-section", [("count", result.linkerErrors.count)])
             parts.append("")
             parts.append("Linker errors:")
             for err in result.linkerErrors {
@@ -232,6 +250,7 @@ enum XcodebuildOutputParser {
 
         // Warnings section
         if !result.warnings.isEmpty {
+            TraceLog.point("warnings-section", [("count", result.warnings.count)])
             parts.append("")
             parts.append("Warnings:")
             for diag in result.warnings {
@@ -241,6 +260,7 @@ enum XcodebuildOutputParser {
 
         // Fallback: if failed but we parsed nothing useful, include filtered raw output
         if !result.succeeded && result.errors.isEmpty && result.warnings.isEmpty && result.linkerErrors.isEmpty {
+            TraceLog.point("fallback-raw-output")
             let trimmed = trimXcodebuildNoise(result.rawOutput)
             if !trimmed.isEmpty {
                 parts.append("")
@@ -249,12 +269,14 @@ enum XcodebuildOutputParser {
             }
         }
 
+        TraceLog.exit([("partCount", parts.count)])
         return parts.joined(separator: "\n")
     }
 
     // MARK: - Test output parsing
 
     static func parseTestOutput(_ output: String, exitCode: Int32) -> TestResult {
+        TraceLog.enter([("outputLength", output.count), ("exitCode", exitCode)])
         let lines = output.components(separatedBy: "\n")
         var testCases: [TestCase] = []
 
@@ -273,6 +295,7 @@ enum XcodebuildOutputParser {
         var pendingContextLines: [String] = []
         var isInsideTestCase = false
 
+        TraceLog.point("scan-lines", [("count", lines.count)])
         for line in lines {
             let nsLine = line as NSString
             let range = NSRange(location: 0, length: nsLine.length)
@@ -281,6 +304,7 @@ enum XcodebuildOutputParser {
             let isXCTestStarted = line.contains("Test Case") && line.contains("started")
             let isSwiftTestingStarted = line.contains("◇ Test") && line.contains("started")
             if isXCTestStarted || isSwiftTestingStarted {
+                TraceLog.point("test-started")
                 pendingContextLines = []
                 isInsideTestCase = true
                 continue
@@ -290,6 +314,7 @@ enum XcodebuildOutputParser {
             if let regex = xcTestRegex,
                let match = regex.firstMatch(in: line, range: range),
                match.numberOfRanges == 5 {
+                TraceLog.point("xctest-result")
                 let module = nsLine.substring(with: match.range(at: 1))
                 let method = nsLine.substring(with: match.range(at: 2))
                 let statusStr = nsLine.substring(with: match.range(at: 3))
@@ -317,6 +342,7 @@ enum XcodebuildOutputParser {
             if let regex = swiftTestingRegex,
                let match = regex.firstMatch(in: line, range: range),
                match.numberOfRanges == 4 {
+                TraceLog.point("swifttesting-result")
                 let name = nsLine.substring(with: match.range(at: 1))
                     .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
                 let statusStr = nsLine.substring(with: match.range(at: 2))
@@ -353,6 +379,7 @@ enum XcodebuildOutputParser {
         var totalCount = testCases.count
         var failedCount = testCases.filter { $0.status == .failed }.count
         var totalDuration: Double?
+        TraceLog.point("parsed-cases", [("testCases", testCases.count)])
 
         let summaryPattern = #"Executed (\d+) tests?, with (\d+) failures? .* in (\d+\.\d+) \("#
         if let summaryRegex = try? NSRegularExpression(pattern: summaryPattern) {
@@ -361,6 +388,7 @@ enum XcodebuildOutputParser {
             // Use the last match — the overall summary, not a per-suite summary
             let matches = summaryRegex.matches(in: output, range: fullRange)
             if let match = matches.last, match.numberOfRanges >= 4 {
+                TraceLog.point("xctest-summary-matched")
                 if let t = Int(nsOutput.substring(with: match.range(at: 1))) {
                     totalCount = max(totalCount, t)
                 }
@@ -378,12 +406,14 @@ enum XcodebuildOutputParser {
             let fullRange = NSRange(location: 0, length: nsOutput.length)
             if let match = stRegex.firstMatch(in: output, range: fullRange),
                match.numberOfRanges >= 2 {
+                TraceLog.point("swifttesting-summary-matched")
                 let passedCount = Int(nsOutput.substring(with: match.range(at: 1))) ?? 0
                 totalCount = max(totalCount, passedCount + failedCount)
             }
         }
 
         let succeeded = exitCode == 0
+        TraceLog.exit([("succeeded", succeeded), ("totalCount", totalCount), ("failedCount", failedCount)])
         return TestResult(
             succeeded: succeeded,
             testCases: testCases,
@@ -397,16 +427,19 @@ enum XcodebuildOutputParser {
     // MARK: - Test result formatting
 
     static func formatTestResult(_ result: TestResult) -> String {
+        TraceLog.enter([("succeeded", result.succeeded), ("totalCount", result.totalCount), ("failedCount", result.failedCount)])
         var parts: [String] = []
 
         let passedCount = result.totalCount - result.failedCount
         if result.succeeded {
+            TraceLog.point("succeeded")
             var summary = "\(result.totalCount) test\(result.totalCount == 1 ? "" : "s") passed."
             if let d = result.duration {
                 summary += " (\(formatDuration(d)))"
             }
             parts.append(summary)
         } else {
+            TraceLog.point("failed")
             var summary = "\(passedCount) passed, \(result.failedCount) failed"
             summary += " (\(result.totalCount) total)."
             if let d = result.duration {
@@ -417,6 +450,7 @@ enum XcodebuildOutputParser {
 
         // If all passed, keep it short
         if result.succeeded && result.failedCount == 0 {
+            TraceLog.exit([("allPassed", true)])
             return parts.joined(separator: "\n")
         }
 
@@ -430,6 +464,7 @@ enum XcodebuildOutputParser {
             let hasAnyGroup = groups.contains { $0.tests.count > 1 }
 
             if hasAnyGroup {
+                TraceLog.point("grouped-failures", [("groupCount", groups.count)])
                 for group in groups {
                     let countLabel = group.tests.count == 1 ? "1 test" : "\(group.tests.count) tests"
                     parts.append("")
@@ -443,6 +478,7 @@ enum XcodebuildOutputParser {
                     }
                 }
             } else {
+                TraceLog.point("individual-failures", [("count", failures.count)])
                 for tc in failures {
                     var line = "  FAIL \(tc.name)"
                     if let d = tc.duration {
@@ -460,6 +496,7 @@ enum XcodebuildOutputParser {
 
         // Fallback: if tests failed but nothing parsed
         if !result.succeeded && failures.isEmpty && result.testCases.isEmpty {
+            TraceLog.point("fallback-raw-output")
             let filtered = stripBuildOutput(result.rawOutput)
             if !filtered.isEmpty {
                 parts.append("")
@@ -468,13 +505,16 @@ enum XcodebuildOutputParser {
             }
         }
 
+        TraceLog.exit([("partCount", parts.count)])
         return parts.joined(separator: "\n")
     }
 
     // MARK: - Failure grouping
 
     static func normalizeFailureMessage(_ message: String?) -> String {
+        TraceLog.enter([("message", message)])
         guard let message = message, !message.isEmpty else {
+            TraceLog.point("empty-message")
             return "Unknown failure"
         }
 
@@ -499,10 +539,12 @@ enum XcodebuildOutputParser {
         }.filter { !$0.isEmpty }
 
         let joined = normalized.joined(separator: "\n")
+        TraceLog.exit([("resultLength", joined.count)])
         return joined.isEmpty ? "Unknown failure" : joined
     }
 
     static func groupFailuresByMessage(_ failures: [TestCase]) -> [FailureGroup] {
+        TraceLog.enter([("failures", failures.count)])
         var groupOrder: [String] = []
         var groupMap: [String: (displayMessage: String, tests: [TestCase])] = [:]
 
@@ -517,15 +559,18 @@ enum XcodebuildOutputParser {
             }
         }
 
-        return groupOrder.compactMap { key in
+        let result = groupOrder.compactMap { key -> FailureGroup? in
             guard let entry = groupMap[key] else { return nil }
             return FailureGroup(displayMessage: entry.displayMessage, tests: entry.tests)
         }
+        TraceLog.exit([("groupCount", result.count)])
+        return result
     }
 
     // MARK: - Scheme list parsing
 
     static func parseListOutput(_ output: String) -> ProjectInfo {
+        TraceLog.enter([("outputLength", output.count)])
         var targets: [String] = []
         var buildConfigurations: [String] = []
         var schemes: [String] = []
@@ -543,20 +588,24 @@ enum XcodebuildOutputParser {
 
             // Detect section headers
             if trimmed.hasSuffix("Targets:") || trimmed == "Targets:" {
+                TraceLog.point("section-targets")
                 currentSection = .targets
                 continue
             }
             if trimmed.hasSuffix("Build Configurations:") || trimmed == "Build Configurations:" {
+                TraceLog.point("section-buildConfigurations")
                 currentSection = .buildConfigurations
                 continue
             }
             if trimmed.hasSuffix("Schemes:") || trimmed == "Schemes:" {
+                TraceLog.point("section-schemes")
                 currentSection = .schemes
                 continue
             }
 
             // "If no build configuration..." is a footer line — stop collecting
             if trimmed.hasPrefix("If no build configuration") {
+                TraceLog.point("footer-line")
                 currentSection = .none
                 continue
             }
@@ -578,13 +627,16 @@ enum XcodebuildOutputParser {
             }
         }
 
+        TraceLog.exit([("targets", targets.count), ("buildConfigurations", buildConfigurations.count), ("schemes", schemes.count)])
         return ProjectInfo(targets: targets, buildConfigurations: buildConfigurations, schemes: schemes)
     }
 
     static func formatProjectInfo(_ info: ProjectInfo) -> String {
+        TraceLog.enter([("schemes", info.schemes.count), ("targets", info.targets.count), ("buildConfigurations", info.buildConfigurations.count)])
         var parts: [String] = []
 
         if !info.schemes.isEmpty {
+            TraceLog.point("schemes-section")
             parts.append("Schemes:")
             for scheme in info.schemes {
                 parts.append("  \(scheme)")
@@ -592,6 +644,7 @@ enum XcodebuildOutputParser {
         }
 
         if !info.targets.isEmpty {
+            TraceLog.point("targets-section")
             if !parts.isEmpty { parts.append("") }
             parts.append("Targets:")
             for target in info.targets {
@@ -600,6 +653,7 @@ enum XcodebuildOutputParser {
         }
 
         if !info.buildConfigurations.isEmpty {
+            TraceLog.point("buildConfigurations-section")
             if !parts.isEmpty { parts.append("") }
             parts.append("Build Configurations:")
             for config in info.buildConfigurations {
@@ -608,15 +662,18 @@ enum XcodebuildOutputParser {
         }
 
         if parts.isEmpty {
+            TraceLog.point("empty")
             return "No schemes, targets, or build configurations found."
         }
 
+        TraceLog.exit([("partCount", parts.count)])
         return parts.joined(separator: "\n")
     }
 
     // MARK: - Build settings parsing
 
     static func parseBuildSettings(_ output: String) -> String {
+        TraceLog.enter([("outputLength", output.count)])
         let lines = output.components(separatedBy: "\n")
         var cleaned: [String] = []
 
@@ -632,15 +689,18 @@ enum XcodebuildOutputParser {
         }
 
         if cleaned.isEmpty {
+            TraceLog.point("empty")
             return "No build settings found."
         }
 
+        TraceLog.exit([("lineCount", cleaned.count)])
         return cleaned.joined(separator: "\n")
     }
 
     // MARK: - Analyze output parsing
 
     static func parseAnalyzeOutput(_ output: String, exitCode: Int32) -> BuildResult {
+        TraceLog.enter([("outputLength", output.count), ("exitCode", exitCode)])
         // Analyze uses the same diagnostic format as build, plus analyzer-specific warnings
         // that also follow the file:line:col: warning: pattern
         return parseBuildOutput(output, exitCode: exitCode)
@@ -649,11 +709,15 @@ enum XcodebuildOutputParser {
     // MARK: - Helpers
 
     static func formatDuration(_ seconds: Double) -> String {
+        TraceLog.enter([("seconds", seconds)])
         if seconds < 1.0 {
+            TraceLog.point("sub-second")
             return String(format: "%.3fs", seconds)
         } else if seconds < 60.0 {
+            TraceLog.point("sub-minute")
             return String(format: "%.1fs", seconds)
         } else {
+            TraceLog.point("minutes")
             let mins = Int(seconds) / 60
             let secs = seconds - Double(mins * 60)
             return String(format: "%dm %.1fs", mins, secs)
@@ -662,6 +726,7 @@ enum XcodebuildOutputParser {
 
     /// Strip noisy xcodebuild progress lines and keep only potentially useful output.
     static func trimXcodebuildNoise(_ output: String) -> String {
+        TraceLog.enter([("outputLength", output.count)])
         let noisePatterns: [String] = [
             #"^\s*CompileC "#,
             #"^\s*CompileSwift "#,
@@ -700,13 +765,16 @@ enum XcodebuildOutputParser {
         let result = filtered.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         let resultLines = result.components(separatedBy: "\n")
         if resultLines.count > 100 {
+            TraceLog.point("capped", [("total", resultLines.count)])
             return resultLines.prefix(100).joined(separator: "\n") + "\n... (\(resultLines.count - 100) more lines)"
         }
+        TraceLog.exit([("lineCount", resultLines.count)])
         return result
     }
 
     /// Strip build/compilation lines from test output — the user asked to test, not to see compilation.
     static func stripBuildOutput(_ output: String) -> String {
+        TraceLog.enter([("outputLength", output.count)])
         let lines = output.components(separatedBy: "\n")
         let noisePatterns: [String] = [
             #"^\s*CompileC "#,
@@ -753,8 +821,10 @@ enum XcodebuildOutputParser {
         let result = filtered.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         let resultLines = result.components(separatedBy: "\n")
         if resultLines.count > 100 {
+            TraceLog.point("capped", [("total", resultLines.count)])
             return resultLines.prefix(100).joined(separator: "\n") + "\n... (\(resultLines.count - 100) more lines)"
         }
+        TraceLog.exit([("lineCount", resultLines.count)])
         return result
     }
 }

@@ -42,6 +42,10 @@ enum NotarytoolTool {
                         "type": .string("string"),
                         "description": .string("Timeout duration for wait, e.g. \"10m\", \"1h\" (used with submit --wait or the wait action)"),
                     ]),
+                    "traceLog": .object([
+                        "type": .string("string"),
+                        "description": .string("Absolute path to write an exhaustive JSONL trace log to for debugging. Enables tracing process-wide once set."),
+                    ]),
                 ]),
                 "required": .array([.string("action"), .string("keychainProfile")]),
             ]),
@@ -52,26 +56,38 @@ enum NotarytoolTool {
     // MARK: - Handle
 
     static func handle(_ arguments: [String: Value]?) async throws -> CallTool.Result {
+        if let traceLogPath = arguments?["traceLog"]?.stringValue, !traceLogPath.isEmpty {
+            TraceLog.enable(path: traceLogPath)
+        }
+        TraceLog.enter([("arguments", String(describing: arguments))])
         guard let args = arguments,
               let action = args["action"]?.stringValue else {
+            TraceLog.point("missing-action")
             throw MCPError.invalidParams("Missing required argument: action")
         }
         guard let keychainProfile = args["keychainProfile"]?.stringValue else {
+            TraceLog.point("missing-keychainProfile")
             throw MCPError.invalidParams("Missing required argument: keychainProfile")
         }
 
         switch action {
         case "submit":
+            TraceLog.point("action:submit")
             return try await handleSubmit(args: args, keychainProfile: keychainProfile)
         case "status":
+            TraceLog.point("action:status")
             return try await handleStatus(args: args, keychainProfile: keychainProfile)
         case "history":
+            TraceLog.point("action:history")
             return try await handleHistory(keychainProfile: keychainProfile)
         case "log":
+            TraceLog.point("action:log")
             return try await handleLog(args: args, keychainProfile: keychainProfile)
         case "wait":
+            TraceLog.point("action:wait")
             return try await handleWait(args: args, keychainProfile: keychainProfile)
         default:
+            TraceLog.point("unknown-action", [("action", action)])
             throw MCPError.invalidParams(
                 "Unknown action: \(action). Valid actions: submit, status, history, log, wait"
             )
@@ -84,7 +100,9 @@ enum NotarytoolTool {
         args: [String: Value],
         keychainProfile: String
     ) async throws -> CallTool.Result {
+        TraceLog.enter([("keychainProfile", keychainProfile)])
         guard let filePath = args["filePath"]?.stringValue else {
+            TraceLog.point("missing-filePath")
             throw MCPError.invalidParams("Missing required argument: filePath (required for submit)")
         }
 
@@ -92,9 +110,11 @@ enum NotarytoolTool {
         cmdArgs.append(contentsOf: ["--keychain-profile", keychainProfile])
 
         if args["wait"]?.boolValue == true {
+            TraceLog.point("wait-enabled")
             cmdArgs.append("--wait")
         }
         if let timeout = args["timeout"]?.stringValue {
+            TraceLog.point("timeout", [("timeout", timeout)])
             cmdArgs.append(contentsOf: ["--timeout", timeout])
         }
         cmdArgs.append(contentsOf: ["--output-format", "json"])
@@ -102,6 +122,7 @@ enum NotarytoolTool {
         let result = try await runNotarytool(cmdArgs)
         let isError = result.exitCode != 0
         let summary = formatJSONOutput(result.output, action: "submit", isError: isError)
+        TraceLog.exit([("isError", isError), ("exitCode", result.exitCode)])
         return .init(content: [.text(text: summary, annotations: nil, _meta: nil)], isError: isError)
     }
 
@@ -109,7 +130,9 @@ enum NotarytoolTool {
         args: [String: Value],
         keychainProfile: String
     ) async throws -> CallTool.Result {
+        TraceLog.enter([("keychainProfile", keychainProfile)])
         guard let submissionId = args["submissionId"]?.stringValue else {
+            TraceLog.point("missing-submissionId")
             throw MCPError.invalidParams("Missing required argument: submissionId (required for status)")
         }
 
@@ -122,12 +145,14 @@ enum NotarytoolTool {
         let result = try await runNotarytool(cmdArgs)
         let isError = result.exitCode != 0
         let summary = formatJSONOutput(result.output, action: "status", isError: isError)
+        TraceLog.exit([("isError", isError), ("exitCode", result.exitCode)])
         return .init(content: [.text(text: summary, annotations: nil, _meta: nil)], isError: isError)
     }
 
     private static func handleHistory(
         keychainProfile: String
     ) async throws -> CallTool.Result {
+        TraceLog.enter([("keychainProfile", keychainProfile)])
         let cmdArgs = [
             "notarytool", "history",
             "--keychain-profile", keychainProfile,
@@ -137,6 +162,7 @@ enum NotarytoolTool {
         let result = try await runNotarytool(cmdArgs)
         let isError = result.exitCode != 0
         let summary = formatJSONOutput(result.output, action: "history", isError: isError)
+        TraceLog.exit([("isError", isError), ("exitCode", result.exitCode)])
         return .init(content: [.text(text: summary, annotations: nil, _meta: nil)], isError: isError)
     }
 
@@ -144,7 +170,9 @@ enum NotarytoolTool {
         args: [String: Value],
         keychainProfile: String
     ) async throws -> CallTool.Result {
+        TraceLog.enter([("keychainProfile", keychainProfile)])
         guard let submissionId = args["submissionId"]?.stringValue else {
+            TraceLog.point("missing-submissionId")
             throw MCPError.invalidParams("Missing required argument: submissionId (required for log)")
         }
 
@@ -157,6 +185,7 @@ enum NotarytoolTool {
         let result = try await runNotarytool(cmdArgs)
         let isError = result.exitCode != 0
         let summary = formatJSONOutput(result.output, action: "log", isError: isError)
+        TraceLog.exit([("isError", isError), ("exitCode", result.exitCode)])
         return .init(content: [.text(text: summary, annotations: nil, _meta: nil)], isError: isError)
     }
 
@@ -164,7 +193,9 @@ enum NotarytoolTool {
         args: [String: Value],
         keychainProfile: String
     ) async throws -> CallTool.Result {
+        TraceLog.enter([("keychainProfile", keychainProfile)])
         guard let submissionId = args["submissionId"]?.stringValue else {
+            TraceLog.point("missing-submissionId")
             throw MCPError.invalidParams("Missing required argument: submissionId (required for wait)")
         }
 
@@ -173,6 +204,7 @@ enum NotarytoolTool {
             "--keychain-profile", keychainProfile,
         ]
         if let timeout = args["timeout"]?.stringValue {
+            TraceLog.point("timeout", [("timeout", timeout)])
             cmdArgs.append(contentsOf: ["--timeout", timeout])
         }
         cmdArgs.append(contentsOf: ["--output-format", "json"])
@@ -180,6 +212,7 @@ enum NotarytoolTool {
         let result = try await runNotarytool(cmdArgs)
         let isError = result.exitCode != 0
         let summary = formatJSONOutput(result.output, action: "wait", isError: isError)
+        TraceLog.exit([("isError", isError), ("exitCode", result.exitCode)])
         return .init(content: [.text(text: summary, annotations: nil, _meta: nil)], isError: isError)
     }
 
@@ -187,11 +220,15 @@ enum NotarytoolTool {
 
     /// Run notarytool via xcrun.
     private static func runNotarytool(_ arguments: [String]) async throws -> ShellCommand.Result {
-        try await ShellCommand.run("/usr/bin/xcrun", arguments: arguments)
+        TraceLog.enter([("arguments", String(describing: arguments))])
+        let result = try await ShellCommand.run("/usr/bin/xcrun", arguments: arguments)
+        TraceLog.exit([("exitCode", result.exitCode)])
+        return result
     }
 
     /// Attempt to pretty-print JSON output, or return raw output with a status header.
     private static func formatJSONOutput(_ rawOutput: String, action: String, isError: Bool) -> String {
+        TraceLog.enter([("action", action), ("isError", isError)])
         let statusLabel = isError ? "FAILED" : "OK"
         let header = "notarytool \(action): \(statusLabel)"
 
@@ -201,9 +238,11 @@ enum NotarytoolTool {
               let prettyData = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]),
               let prettyString = String(data: prettyData, encoding: .utf8) else {
             // Not valid JSON — return raw output
+            TraceLog.exit([("pretty", false)])
             return "\(header)\n\n\(rawOutput)"
         }
 
+        TraceLog.exit([("pretty", true)])
         return "\(header)\n\n\(prettyString)"
     }
 }

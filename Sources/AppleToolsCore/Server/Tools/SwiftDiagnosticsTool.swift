@@ -25,18 +25,23 @@ enum SwiftDiagnosticsTool {
         _ arguments: [String: Value]?,
         lspService: SourceKitLSPService
     ) async throws -> CallTool.Result {
+        TraceLog.enter([("arguments", String(describing: arguments))])
         guard let args = arguments,
               let filePath = args["filePath"]?.stringValue else {
+            TraceLog.point("missing-filePath")
             throw MCPError.invalidParams("Missing required argument: filePath")
         }
+        TraceLog.point("args-ok", [("filePath", filePath)])
 
         let uri = FileURI.fromPath(filePath)
         let diagnostics = try await lspService.diagnostics(uri: uri)
 
         let text: String
         if diagnostics.isEmpty {
+            TraceLog.point("diagnostics-empty")
             text = "No diagnostics found. The file appears to be clean."
         } else {
+            TraceLog.point("diagnostics-present", [("count", diagnostics.count)])
             let lines = diagnostics.map { diagnostic -> String in
                 let severity = severityName(diagnostic.severity)
                 let line = diagnostic.range.start.line
@@ -46,16 +51,21 @@ enum SwiftDiagnosticsTool {
             text = "Found \(diagnostics.count) diagnostic(s):\n\n" + lines.joined(separator: "\n")
         }
 
+        TraceLog.exit([("textLength", text.count)])
         return .init(content: [.text(text: text, annotations: nil, _meta: nil)], isError: false)
     }
 
     private static func severityName(_ severity: Int?) -> String {
+        TraceLog.enter([("severity", severity)])
+        let name: String
         switch severity {
-        case 1: return "Error"
-        case 2: return "Warning"
-        case 3: return "Information"
-        case 4: return "Hint"
-        default: return "Unknown"
+        case 1: name = "Error"
+        case 2: name = "Warning"
+        case 3: name = "Information"
+        case 4: name = "Hint"
+        default: name = "Unknown"
         }
+        TraceLog.exit([("name", name)])
+        return name
     }
 }

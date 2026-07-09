@@ -25,18 +25,23 @@ enum SwiftDocumentSymbolsTool {
         _ arguments: [String: Value]?,
         lspService: SourceKitLSPService
     ) async throws -> CallTool.Result {
+        TraceLog.enter([("arguments", String(describing: arguments))])
         guard let args = arguments,
               let filePath = args["filePath"]?.stringValue else {
+            TraceLog.point("missing-filePath")
             throw MCPError.invalidParams("Missing required argument: filePath")
         }
+        TraceLog.point("args-ok", [("filePath", filePath)])
 
         let uri = FileURI.fromPath(filePath)
         let symbols = try await lspService.documentSymbols(uri: uri)
 
         let text: String
         if symbols.isEmpty {
+            TraceLog.point("symbols-empty")
             text = "No symbols found."
         } else {
+            TraceLog.point("symbols-present", [("count", symbols.count)])
             var lines: [String] = []
             for symbol in symbols {
                 formatSymbol(symbol, indent: 0, into: &lines)
@@ -44,13 +49,18 @@ enum SwiftDocumentSymbolsTool {
             text = lines.joined(separator: "\n")
         }
 
+        TraceLog.exit([("textLength", text.count)])
         return .init(content: [.text(text: text, annotations: nil, _meta: nil)], isError: false)
     }
 
     private static func formatSymbol(_ symbol: DocumentSymbol, indent: Int, into lines: inout [String]) {
+        TraceLog.enter([("name", symbol.name), ("indent", indent)])
         let kind = LSPSymbolKind(rawValue: symbol.kind)
         // Skip MARK/TODO comments (they show up as namespace kind with "- " prefix)
-        if kind == .namespace { return }
+        if kind == .namespace {
+            TraceLog.point("skip-namespace")
+            return
+        }
 
         let prefix = String(repeating: "  ", count: indent)
         let kindName = kind?.description.lowercased() ?? "unknown"
@@ -58,6 +68,7 @@ enum SwiftDocumentSymbolsTool {
         lines.append("\(prefix)\(kindName) \(symbol.name) L\(line)")
 
         if let children = symbol.children {
+            TraceLog.point("has-children", [("count", children.count)])
             // Group children by kind
             var groups: [(String, [DocumentSymbol])] = []
             for child in children {
@@ -70,10 +81,12 @@ enum SwiftDocumentSymbolsTool {
                     groups.append((childKindName, [child]))
                 }
             }
+            TraceLog.point("children-grouped", [("groupCount", groups.count)])
             let childPrefix = String(repeating: "  ", count: indent + 1)
             let memberPrefix = String(repeating: "  ", count: indent + 2)
             for (groupKind, members) in groups {
                 if members.count == 1 {
+                    TraceLog.point("group-single", [("groupKind", groupKind)])
                     let m = members[0]
                     let mLine = m.selectionRange.start.line
                     lines.append("\(childPrefix)\(groupKind) \(m.name) L\(mLine)")
@@ -83,6 +96,7 @@ enum SwiftDocumentSymbolsTool {
                         }
                     }
                 } else {
+                    TraceLog.point("group-plural", [("groupKind", groupKind), ("memberCount", members.count)])
                     let plural = groupKind.hasSuffix("y")
                         ? String(groupKind.dropLast()) + "ies"
                         : groupKind + "s"
@@ -99,5 +113,6 @@ enum SwiftDocumentSymbolsTool {
                 }
             }
         }
+        TraceLog.exit([("name", symbol.name)])
     }
 }

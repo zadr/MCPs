@@ -33,30 +33,37 @@ enum SwiftBuildTool {
     // MARK: - Handle
 
     static func handle(_ arguments: [String: Value]?) async throws -> CallTool.Result {
+        TraceLog.enter([("arguments", String(describing: arguments))])
         guard let args = arguments,
               let packagePath = args["packagePath"]?.stringValue else {
+            TraceLog.point("missing-packagePath")
             throw MCPError.invalidParams("Missing required argument: packagePath")
         }
 
         guard let timeoutSeconds = args["timeoutSeconds"]?.intValue
             ?? args["timeoutSeconds"]?.doubleValue.map({ Int($0) }) else {
+            TraceLog.point("missing-timeoutSeconds")
             throw MCPError.invalidParams("Missing required argument: timeoutSeconds (integer, seconds)")
         }
         guard timeoutSeconds > 0 else {
+            TraceLog.point("timeout-nonpositive", [("timeoutSeconds", timeoutSeconds)])
             throw MCPError.invalidParams("timeoutSeconds must be > 0")
         }
 
         let configuration = args["configuration"]?.stringValue ?? "debug"
         guard configuration == "debug" || configuration == "release" else {
+            TraceLog.point("bad-configuration", [("configuration", configuration)])
             throw MCPError.invalidParams("configuration must be \"debug\" or \"release\"")
         }
 
         var cmdArgs = ["build", "-c", configuration]
 
         if let target = args["target"]?.stringValue {
+            TraceLog.point("target-set", [("target", target)])
             cmdArgs.append(contentsOf: ["--target", target])
         }
 
+        TraceLog.point("running", [("packagePath", packagePath), ("timeoutSeconds", timeoutSeconds), ("cmdArgs", String(describing: cmdArgs))])
         do {
             let result = try await ShellCommand.run(
                 Toolchain.swiftPath,
@@ -69,17 +76,20 @@ enum SwiftBuildTool {
             let response = formatBuildResult(parsed)
             let isError = !parsed.succeeded
 
+            TraceLog.exit([("exitCode", result.exitCode), ("isError", isError)])
             return .init(
                 content: [.text(text: response, annotations: nil, _meta: nil)],
                 isError: isError
             )
         } catch let error as AppleToolsError {
             if case .processTimedOut(let reason) = error {
+                TraceLog.point("process-timed-out", [("reason", reason)])
                 return .init(
                     content: [.text(text: "Build timed out: \(reason)", annotations: nil, _meta: nil)],
                     isError: true
                 )
             }
+            TraceLog.point("throwing", [("error", String(describing: error))])
             throw error
         }
     }
@@ -87,6 +97,7 @@ enum SwiftBuildTool {
     // MARK: - Parsing
 
     static func parseBuildOutput(_ output: String, exitCode: Int32) -> BuildResult {
+        TraceLog.enter([("outputLength", output.count), ("exitCode", exitCode)])
         var errors: [Diagnostic] = []
         var warnings: [Diagnostic] = []
         var notes: [Diagnostic] = []
@@ -101,9 +112,13 @@ enum SwiftBuildTool {
         if let regex {
             let nsOutput = output as NSString
             let matches = regex.matches(in: output, range: NSRange(location: 0, length: nsOutput.length))
+            TraceLog.point("diagnostic-matches", [("count", matches.count)])
 
             for match in matches {
-                guard match.numberOfRanges == 6 else { continue }
+                guard match.numberOfRanges == 6 else {
+                    TraceLog.point("match-bad-ranges")
+                    continue
+                }
 
                 let file = nsOutput.substring(with: match.range(at: 1))
                 let lineStr = nsOutput.substring(with: match.range(at: 2))
@@ -114,6 +129,7 @@ enum SwiftBuildTool {
                 guard let line = Int(lineStr),
                       let column = Int(colStr),
                       let severity = Diagnostic.Severity(rawValue: severityStr) else {
+                    TraceLog.point("match-parse-failed")
                     continue
                 }
 
@@ -123,14 +139,23 @@ enum SwiftBuildTool {
                 )
 
                 switch severity {
-                case .error: errors.append(diagnostic)
-                case .warning: warnings.append(diagnostic)
-                case .note: notes.append(diagnostic)
+                case .error:
+                    TraceLog.point("case-error")
+                    errors.append(diagnostic)
+                case .warning:
+                    TraceLog.point("case-warning")
+                    warnings.append(diagnostic)
+                case .note:
+                    TraceLog.point("case-note")
+                    notes.append(diagnostic)
                 }
             }
+        } else {
+            TraceLog.point("regex-nil")
         }
 
         let succeeded = exitCode == 0
+        TraceLog.exit([("succeeded", succeeded), ("errors", errors.count), ("warnings", warnings.count), ("notes", notes.count)])
         return BuildResult(
             succeeded: succeeded,
             errors: errors,
@@ -143,16 +168,20 @@ enum SwiftBuildTool {
     // MARK: - Formatting
 
     static func formatBuildResult(_ result: BuildResult) -> String {
+        TraceLog.enter([("succeeded", result.succeeded), ("errors", result.errors.count), ("warnings", result.warnings.count)])
         var parts: [String] = []
 
         // Summary line
         if result.succeeded {
             if result.warnings.isEmpty {
+                TraceLog.point("succeeded-clean")
                 parts.append("Build succeeded.")
             } else {
+                TraceLog.point("succeeded-with-warnings")
                 parts.append("Build succeeded with \(result.warnings.count) warning\(result.warnings.count == 1 ? "" : "s").")
             }
         } else {
+            TraceLog.point("failed")
             var counts: [String] = []
             if !result.errors.isEmpty {
                 counts.append("\(result.errors.count) error\(result.errors.count == 1 ? "" : "s")")
@@ -169,6 +198,7 @@ enum SwiftBuildTool {
 
         // Errors section
         if !result.errors.isEmpty {
+            TraceLog.point("errors-section", [("count", result.errors.count)])
             parts.append("")
             parts.append("Errors:")
             for diag in result.errors {
@@ -187,6 +217,7 @@ enum SwiftBuildTool {
 
         // Warnings section
         if !result.warnings.isEmpty {
+            TraceLog.point("warnings-section", [("count", result.warnings.count)])
             parts.append("")
             parts.append("Warnings:")
             for diag in result.warnings {
@@ -196,6 +227,7 @@ enum SwiftBuildTool {
 
         // Fallback: if build failed but we parsed nothing useful, include raw output
         if !result.succeeded && result.errors.isEmpty && result.warnings.isEmpty {
+            TraceLog.point("fallback-raw-output")
             let trimmed = trimBuildNoise(result.rawOutput)
             if !trimmed.isEmpty {
                 parts.append("")
@@ -204,6 +236,7 @@ enum SwiftBuildTool {
             }
         }
 
+        TraceLog.exit([("partCount", parts.count)])
         return parts.joined(separator: "\n")
     }
 
@@ -215,7 +248,11 @@ enum SwiftBuildTool {
         notes: [Diagnostic],
         relativeTo errors: [Diagnostic]
     ) -> [(Int, [Diagnostic])] {
-        guard !notes.isEmpty, !errors.isEmpty else { return [] }
+        TraceLog.enter([("notes", notes.count), ("errors", errors.count)])
+        guard !notes.isEmpty, !errors.isEmpty else {
+            TraceLog.point("empty")
+            return []
+        }
 
         var result: [(Int, [Diagnostic])] = []
         var usedNotes = Set<Int>()
@@ -233,12 +270,14 @@ enum SwiftBuildTool {
             }
         }
 
+        TraceLog.exit([("groupCount", result.count)])
         return result
     }
 
     /// Strip noisy build-progress lines (Compiling, Linking, Fetching, etc.)
     /// and keep only potentially useful output.
     private static func trimBuildNoise(_ output: String) -> String {
+        TraceLog.enter([("outputLength", output.count)])
         let noisePatterns: [String] = [
             "^Building for ",
             "^Compiling ",
@@ -260,8 +299,10 @@ enum SwiftBuildTool {
         // Cap at 100 lines to avoid massive output
         let resultLines = result.components(separatedBy: "\n")
         if resultLines.count > 100 {
+            TraceLog.point("capped", [("total", resultLines.count)])
             return resultLines.prefix(100).joined(separator: "\n") + "\n... (\(resultLines.count - 100) more lines)"
         }
+        TraceLog.exit([("lineCount", resultLines.count)])
         return result
     }
 }

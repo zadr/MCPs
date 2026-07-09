@@ -42,19 +42,25 @@ enum SwiftRenameTool {
         _ arguments: [String: Value]?,
         lspService: SourceKitLSPService
     ) async throws -> CallTool.Result {
+        TraceLog.enter([("arguments", String(describing: arguments))])
         guard let args = arguments,
               let filePath = args["filePath"]?.stringValue else {
+            TraceLog.point("missing-filePath")
             throw MCPError.invalidParams("Missing required argument: filePath")
         }
         guard let line = args["line"]?.intValue ?? args["line"]?.doubleValue.map({ Int($0) }) else {
+            TraceLog.point("missing-line")
             throw MCPError.invalidParams("Missing required argument: line")
         }
         guard let character = args["character"]?.intValue ?? args["character"]?.doubleValue.map({ Int($0) }) else {
+            TraceLog.point("missing-character")
             throw MCPError.invalidParams("Missing required argument: character")
         }
         guard let newName = args["newName"]?.stringValue else {
+            TraceLog.point("missing-newName")
             throw MCPError.invalidParams("Missing required argument: newName")
         }
+        TraceLog.point("args-ok", [("filePath", filePath), ("line", line), ("character", character), ("newName", newName)])
 
         let uri = FileURI.fromPath(filePath)
         let workspaceEdit = try await lspService.rename(
@@ -66,6 +72,7 @@ enum SwiftRenameTool {
 
         let text: String
         if let changes = workspaceEdit.changes, !changes.isEmpty {
+            TraceLog.point("changes-present", [("fileCount", changes.count)])
             var lines: [String] = []
             lines.append("Rename preview (symbol -> \"\(newName)\"):")
             lines.append("")
@@ -87,6 +94,7 @@ enum SwiftRenameTool {
             lines.append("Total: \(totalEdits) edit(s) across \(changes.count) file(s)")
             text = lines.joined(separator: "\n")
         } else if let documentChanges = workspaceEdit.documentChanges, !documentChanges.isEmpty {
+            TraceLog.point("documentChanges-present", [("count", documentChanges.count)])
             var lines: [String] = []
             lines.append("Rename preview (symbol -> \"\(newName)\"):")
             lines.append("")
@@ -111,9 +119,11 @@ enum SwiftRenameTool {
             lines.append("Total: \(totalEdits) edit(s) across \(fileCount) file(s)")
             text = lines.joined(separator: "\n")
         } else {
+            TraceLog.point("no-changes")
             text = "No changes produced by rename. The symbol may not be renameable at this position."
         }
 
+        TraceLog.exit([("textLength", text.count)])
         return .init(content: [.text(text: text, annotations: nil, _meta: nil)], isError: false)
     }
 }
