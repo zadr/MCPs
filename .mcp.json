@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "git-tools": {
+      "type": "stdio",
+      "command": "/Users/z/Projects/cli/mcps/git-tools-mcp/.build/debug/git-tools-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}
