@@ -7,7 +7,6 @@ public enum ToolRegistry {
                 SwiftTool.definition,
                 XcodebuildTool.definition,
                 NotarytoolTool.definition,
-                GitTool.definition,
                 SwiftLintTool.definition,
             ])
         }
@@ -20,8 +19,6 @@ public enum ToolRegistry {
                 return try await XcodebuildTool.handle(params.arguments)
             case NotarytoolTool.name:
                 return try await NotarytoolTool.handle(params.arguments)
-            case GitTool.name:
-                return try await GitTool.handle(params.arguments)
             case SwiftLintTool.name:
                 return try await SwiftLintTool.handle(params.arguments)
             default:
