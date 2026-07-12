@@ -5,6 +5,7 @@ public enum ToolRegistry {
         await server.withMethodHandler(ListTools.self) { _ in
             ListTools.Result(tools: [
                 GitTool.definition,
+                GitStackTool.definition,
             ])
         }
 
@@ -12,6 +13,8 @@ public enum ToolRegistry {
             switch params.name {
             case GitTool.name:
                 return try await GitTool.handle(params.arguments)
+            case GitStackTool.name:
+                return try await GitStackTool.handle(params.arguments)
             default:
                 throw MCPError.invalidParams("Unknown tool: \(params.name)")
             }

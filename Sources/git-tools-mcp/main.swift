@@ -38,7 +38,7 @@ for sig in shutdownSignals {
 let server = Server(
     name: "git-tools-mcp",
     version: "0.1.0",
-    instructions: "Provides git version control operations via a comprehensive git frontend.",
+    instructions: "Provides git version control operations. The git-core tool is a comprehensive low-level git frontend; the git-stack tool manages stacked-branch workflows (parent/child topology tracked in git config).",
     capabilities: .init(
         tools: .init(listChanged: false)
     )
