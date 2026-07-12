@@ -144,7 +144,8 @@ final class GitStackToolHandleTests: XCTestCase {
             "name": .string("feature"),
         ])
         XCTAssertEqual(new.isError, false)
-        XCTAssertEqual(try await currentBranch(), "feature")
+        let branchAfterNew = try await currentBranch()
+        XCTAssertEqual(branchAfterNew, "feature")
 
         let info = try await call(["action": .string("stack_info"), "repoPath": .string(repoPath)])
         XCTAssertEqual(info.isError, false)
@@ -283,7 +284,8 @@ final class GitStackToolHandleTests: XCTestCase {
             "repoPath": .string(repoPath),
             "branch": .string(base),
         ])
-        XCTAssertEqual(text(kids), "Children of \(base): b")
+        let baseName: String = base
+        XCTAssertEqual(text(kids), "Children of \(baseName): b")
 
         // Branch a should be gone.
         let branchList = try await git(["branch", "--list", "a"])

@@ -575,8 +575,12 @@ enum GitStackTool {
         // Non-zero exit when there are no matches; treat as empty.
         guard result.exitCode == 0 else { return [] }
 
+        // git canonicalizes the trailing variable name to lowercase, so the
+        // key comes back as "branch.<child>.stackparent" regardless of how it
+        // was written. Match prefix/suffix case-insensitively; the branch
+        // subsection between them preserves its original case.
         let prefix = "branch."
-        let suffix = ".stackParent"
+        let suffix = ".stackparent"
         var kids: [String] = []
         for line in result.output.components(separatedBy: "\n") {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -590,7 +594,8 @@ enum GitStackTool {
             guard value == branch else { continue }
             // Branch names can contain dots; strip the known prefix/suffix
             // rather than splitting on '.'.
-            guard key.hasPrefix(prefix), key.hasSuffix(suffix) else { continue }
+            let lowerKey = key.lowercased()
+            guard lowerKey.hasPrefix(prefix), lowerKey.hasSuffix(suffix) else { continue }
             let child = String(key.dropFirst(prefix.count).dropLast(suffix.count))
             if !child.isEmpty { kids.append(child) }
         }
@@ -621,13 +626,27 @@ enum GitStackTool {
 
         var restacked: [String] = []
         if let p = try await parent(of: branch, repoPath: repoPath) {
-            // Rebase branch's unique commits onto the parent tip.
-            let rebase = try await git(["-C", repoPath, "rebase", p, branch])
-            if rebase.exitCode != 0 {
-                _ = try await git(["-C", repoPath, "rebase", "--abort"])
-                throw StackError("rebase of \(branch) onto \(p) failed:\n\(rebase.output)")
+            // Skip when the branch already sits on the parent's current tip:
+            // the parent hasn't moved, so rebasing would needlessly rewrite the
+            // branch's commits (new SHAs) and break descendants that reference
+            // the old tip. `p` being an ancestor of `branch` means up to date.
+            let upToDate = try await git(["-C", repoPath, "merge-base", "--is-ancestor", p, branch])
+            if upToDate.exitCode != 0 {
+                // Replay only the branch's own commits (fork point ..branch)
+                // onto the parent tip via --onto, so a rewritten parent does
+                // not drag duplicate commits along.
+                let forkPoint = try await git(["-C", repoPath, "merge-base", p, branch])
+                let base = forkPoint.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                let onto = base.isEmpty
+                    ? ["-C", repoPath, "rebase", p, branch]
+                    : ["-C", repoPath, "rebase", "--onto", p, base, branch]
+                let rebase = try await git(onto)
+                if rebase.exitCode != 0 {
+                    _ = try await git(["-C", repoPath, "rebase", "--abort"])
+                    throw StackError("rebase of \(branch) onto \(p) failed:\n\(rebase.output)")
+                }
+                restacked.append(branch)
             }
-            restacked.append(branch)
         }
 
         for child in try await children(of: branch, repoPath: repoPath) {
