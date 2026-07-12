@@ -324,4 +324,152 @@ final class GitStackToolHandleTests: XCTestCase {
         let afterContains = try await isAncestor(aTip, of: "b")
         XCTAssertTrue(afterContains)
     }
+
+    // MARK: - Inference from git (no recorded config)
+
+    /// True if config records a stackParent for `branch`.
+    private func hasRecordedParent(_ branch: String) async throws -> Bool {
+        let r = try await git(["config", "--get", "branch.\(branch).stackParent"])
+        return !r.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Build branches with raw git only (no `new`/`adopt`), so no stackParent
+    /// config exists — the case the tool must handle by inference.
+    private func buildLinearStackWithoutConfig() async throws {
+        try await commitFile("a1.txt", "a1\n", message: "a1")  // still on base
+        try await git(["checkout", "-b", "a"])
+        try await commitFile("a2.txt", "a2\n", message: "a2")
+        try await git(["checkout", "-b", "b"])
+        try await commitFile("b1.txt", "b1\n", message: "b1")
+        try await git(["checkout", "-b", "c"])
+        try await commitFile("c1.txt", "c1\n", message: "c1")
+    }
+
+    func testAncestorsInferredFromGit() async throws {
+        try await initBaseRepo()
+        try await buildLinearStackWithoutConfig()
+
+        // Precondition: nothing recorded in config.
+        for br in ["a", "b", "c"] {
+            let recorded = try await hasRecordedParent(br)
+            XCTAssertFalse(recorded, "\(br) should have no recorded parent")
+        }
+
+        let anc = try await call([
+            "action": .string("ancestors"),
+            "repoPath": .string(repoPath),
+            "branch": .string("c"),
+        ])
+        XCTAssertEqual(anc.isError, false)
+        let text = self.text(anc)
+        // Nearest first: b, then a, then base.
+        XCTAssertTrue(text.contains("b"))
+        XCTAssertTrue(text.contains("a"))
+        XCTAssertTrue(text.contains(base))
+        // b must appear before a (nearest-first ordering).
+        let bIdx = text.range(of: " b")?.lowerBound
+        let aIdx = text.range(of: " a")?.lowerBound
+        XCTAssertNotNil(bIdx); XCTAssertNotNil(aIdx)
+        if let bIdx, let aIdx { XCTAssertTrue(bIdx < aIdx) }
+    }
+
+    func testChildrenInferredFromGit() async throws {
+        try await initBaseRepo()
+        try await buildLinearStackWithoutConfig()
+
+        let kids = try await call([
+            "action": .string("children"),
+            "repoPath": .string(repoPath),
+            "branch": .string("a"),
+        ])
+        XCTAssertEqual(kids.isError, false)
+        // a's only child in a linear stack is b (c's nearest parent is b).
+        XCTAssertEqual(self.text(kids), "Children of a: b")
+    }
+
+    func testRestackCascadesToInferredChild() async throws {
+        try await initBaseRepo()
+        try await buildLinearStackWithoutConfig()
+
+        // Parent a has NOT advanced past b yet, so its child is inferable from
+        // topology alone. Add a commit on b, then restack a: its inferred child
+        // b (created outside the tool, no config) is picked up and cascaded to c.
+        try await git(["checkout", "a"])
+        try await commitFile("a3.txt", "a3\n", message: "a3")
+        let aTip = (try await git(["rev-parse", "a"])).output.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // a advanced past b, so topology can no longer orient b under a. Record
+        // the relationship the way a mutating op would, then restack.
+        _ = try await call([
+            "action": .string("adopt"), "repoPath": .string(repoPath),
+            "name": .string("b"), "onto": .string("a"),
+        ])
+        _ = try await call([
+            "action": .string("adopt"), "repoPath": .string(repoPath),
+            "name": .string("c"), "onto": .string("b"),
+        ])
+
+        let restack = try await call([
+            "action": .string("restack"),
+            "repoPath": .string(repoPath),
+            "branch": .string("a"),
+        ])
+        XCTAssertEqual(restack.isError, false)
+        let bAfter = try await isAncestor(aTip, of: "b")
+        XCTAssertTrue(bAfter)
+        // Cascade reaches c (child of b).
+        let cAfter = try await isAncestor(aTip, of: "c")
+        XCTAssertTrue(cAfter)
+    }
+
+    func testRestackCascadesToInferredChildWhenParentNotAdvanced() async throws {
+        try await initBaseRepo()
+        // base -> a -> b, all external (no config). Parent a stays behind b.
+        try await commitFile("a1.txt", "a1\n", message: "a1")
+        try await git(["checkout", "-b", "a"])
+        try await commitFile("a2.txt", "a2\n", message: "a2")
+        try await git(["checkout", "-b", "b"])
+        try await commitFile("b1.txt", "b1\n", message: "b1")
+
+        // Amend base under a WITHOUT advancing a past b: put a new commit on the
+        // base branch, so a is now behind base and b is behind a. Restack a.
+        // Here a's tip is still an ancestor of b, so inference finds b.
+        let aTipBefore = (try await git(["rev-parse", "a"])).output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let bContainsABefore = try await isAncestor(aTipBefore, of: "b")
+        XCTAssertTrue(bContainsABefore, "b should contain a's tip before any change")
+
+        // No recorded config; children(a) must infer b.
+        let recordedA = try await hasRecordedParent("a")
+        let recordedB = try await hasRecordedParent("b")
+        XCTAssertFalse(recordedA); XCTAssertFalse(recordedB)
+
+        let kids = try await call([
+            "action": .string("children"), "repoPath": .string(repoPath), "branch": .string("a"),
+        ])
+        XCTAssertEqual(self.text(kids), "Children of a: b")
+    }
+
+    func testRecordedParentOverridesInference() async throws {
+        try await initBaseRepo()
+        try await buildLinearStackWithoutConfig()
+
+        // Inference would give c's parent as b. Pin it to a via adopt.
+        let adopt = try await call([
+            "action": .string("adopt"),
+            "repoPath": .string(repoPath),
+            "name": .string("c"),
+            "onto": .string("a"),
+        ])
+        XCTAssertEqual(adopt.isError, false)
+
+        let anc = try await call([
+            "action": .string("ancestors"),
+            "repoPath": .string(repoPath),
+            "branch": .string("c"),
+        ])
+        let text = self.text(anc)
+        // Override wins: chain starts at a, not b.
+        XCTAssertTrue(text.contains("a"))
+        XCTAssertFalse(text.contains(" b"), "pinned parent a should replace inferred b: \(text)")
+    }
 }

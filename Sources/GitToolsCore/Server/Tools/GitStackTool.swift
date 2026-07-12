@@ -139,14 +139,17 @@ enum GitStackTool {
         let chain = try await ancestors(of: cur, repoPath: repoPath)
         let kids = try await children(of: cur, repoPath: repoPath)
         let p = try await parent(of: cur, repoPath: repoPath)
+        let recorded = try await recordedParent(of: cur, repoPath: repoPath)
 
         var lines: [String] = []
         lines.append("Current branch: \(cur)")
         lines.append("Base: \(base)")
         if cur == base {
             lines.append("This is the base branch.")
+        } else if let p, recorded == nil {
+            lines.append("Parent: \(p) (inferred from git; use 'adopt' to pin it).")
         } else if p == nil {
-            lines.append("Untracked: no stack parent recorded (use 'adopt' or 'new').")
+            lines.append("Parent: none found below \(cur).")
         }
         if chain.isEmpty {
             lines.append("Ancestors: (none)")
@@ -550,7 +553,28 @@ enum GitStackTool {
         return value.isEmpty ? "main" : value
     }
 
+    /// The recorded parent of `branch` if config has one; otherwise the parent
+    /// inferred from git topology (nearest ancestor branch). Returns nil only
+    /// when `branch` is the base or nothing in git sits below it.
+    ///
+    /// Config is an explicit override, not the source of truth: a branch created
+    /// outside the tool (no `stackParent`) is still placed in the stack by
+    /// inference, so reads and restacks work with zero recorded state.
     private static func parent(of branch: String, repoPath: String) async throws -> String? {
+        if let recorded = try await recordedParent(of: branch, repoPath: repoPath) {
+            return recorded
+        }
+        let base = try await stackBase(repoPath: repoPath)
+        if branch == base { return nil }
+        let branches = try await localBranches(repoPath: repoPath)
+        var cache = AncestryCache()
+        return try await inferParent(
+            of: branch, base: base, branches: branches, repoPath: repoPath, cache: &cache
+        )
+    }
+
+    /// The parent explicitly recorded in config, or nil if unset.
+    private static func recordedParent(of branch: String, repoPath: String) async throws -> String? {
         let result = try await git(["-C", repoPath, "config", "--get", "branch.\(branch).stackParent"])
         let value = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? nil : value
@@ -568,7 +592,29 @@ enum GitStackTool {
         _ = try await git(["-C", repoPath, "config", "--unset", "branch.\(branch).stackParent"])
     }
 
+    /// Children of `branch`: the union of branches that explicitly record it as
+    /// their `stackParent` (config overrides) and branches whose inferred parent
+    /// is `branch`. Works even when no config exists.
     private static func children(of branch: String, repoPath: String) async throws -> [String] {
+        var kids = Set(try await recordedChildren(of: branch, repoPath: repoPath))
+
+        let base = try await stackBase(repoPath: repoPath)
+        let branches = try await localBranches(repoPath: repoPath)
+        var cache = AncestryCache()
+        for candidate in branches where candidate != branch {
+            // A candidate with an explicit parent is already covered by the
+            // recorded scan above; only infer for the rest.
+            if try await recordedParent(of: candidate, repoPath: repoPath) != nil { continue }
+            let inferred = try await inferParent(
+                of: candidate, base: base, branches: branches, repoPath: repoPath, cache: &cache
+            )
+            if inferred == branch { kids.insert(candidate) }
+        }
+        return kids.sorted()
+    }
+
+    /// Branches that explicitly record `branch` as their `stackParent` in config.
+    private static func recordedChildren(of branch: String, repoPath: String) async throws -> [String] {
         let result = try await git([
             "-C", repoPath, "config", "--get-regexp", "^branch\\..*\\.stackParent$",
         ])
@@ -599,7 +645,102 @@ enum GitStackTool {
             let child = String(key.dropFirst(prefix.count).dropLast(suffix.count))
             if !child.isEmpty { kids.append(child) }
         }
-        return kids.sorted()
+        return kids
+    }
+
+    // MARK: - Git-derived topology inference
+
+    /// Memoizes `isAncestor` results within a single topology computation so the
+    /// pairwise `merge-base` calls stay bounded.
+    private struct AncestryCache {
+        var isAncestor: [String: Bool] = [:]
+    }
+
+    /// All local branch short-names.
+    private static func localBranches(repoPath: String) async throws -> [String] {
+        let result = try await git([
+            "-C", repoPath, "for-each-ref", "--format=%(refname:short)", "refs/heads",
+        ])
+        guard result.exitCode == 0 else { return [] }
+        return result.output
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// True if `ancestor`'s tip is reachable from `branch`.
+    private static func isAncestor(
+        _ ancestor: String, of branch: String, repoPath: String, cache: inout AncestryCache
+    ) async throws -> Bool {
+        let key = "\(ancestor)\u{00}\(branch)"
+        if let cached = cache.isAncestor[key] { return cached }
+        let result = try await git([
+            "-C", repoPath, "merge-base", "--is-ancestor", ancestor, branch,
+        ])
+        let value = result.exitCode == 0
+        cache.isAncestor[key] = value
+        return value
+    }
+
+    /// Number of commits in `from..to` (how far `to` is ahead of `from`).
+    private static func commitDistance(
+        from: String, to: String, repoPath: String
+    ) async throws -> Int {
+        let result = try await git(["-C", repoPath, "rev-list", "--count", "\(from)..\(to)"])
+        return Int(result.output.trimmingCharacters(in: .whitespacesAndNewlines)) ?? Int.max
+    }
+
+    /// Infer `branch`'s parent from git topology: the nearest local branch whose
+    /// tip is an ancestor of `branch` (smallest `<candidate>..branch` distance).
+    ///
+    /// This resolves the case topology CAN orient — a parent that is still at or
+    /// behind the child. Once a parent advances past its child, both carry unique
+    /// commits and git cannot distinguish parent from sibling; inference then
+    /// returns nil and the deliberately recorded `stackParent` (written by `new`,
+    /// `adopt`, `move`, `split`) is authoritative. `parent(of:)` checks the
+    /// record first, so inference only fills the gap for branches created outside
+    /// the tool.
+    ///
+    /// Returns nil when `branch` is the base or nothing below it qualifies.
+    private static func inferParent(
+        of branch: String,
+        base: String,
+        branches: [String],
+        repoPath: String,
+        cache: inout AncestryCache
+    ) async throws -> String? {
+        if branch == base { return nil }
+
+        // Candidates: branches whose tip is an ancestor of `branch`.
+        var distances: [String: Int] = [:]
+        for candidate in branches where candidate != branch {
+            guard try await isAncestor(candidate, of: branch, repoPath: repoPath, cache: &cache) else {
+                continue
+            }
+            distances[candidate] = try await commitDistance(from: candidate, to: branch, repoPath: repoPath)
+        }
+        guard !distances.isEmpty else { return nil }
+
+        let minDistance = distances.values.min() ?? Int.max
+        var nearest = distances.filter { $0.value == minDistance }.map(\.key)
+
+        if nearest.count > 1 {
+            // Tie (candidates on the same commit): keep the most specific by
+            // dropping any that is an ancestor of another tied one, then by name.
+            var mostSpecific: [String] = []
+            for a in nearest {
+                var dominated = false
+                for b in nearest where b != a {
+                    if try await isAncestor(a, of: b, repoPath: repoPath, cache: &cache) {
+                        dominated = true
+                        break
+                    }
+                }
+                if !dominated { mostSpecific.append(a) }
+            }
+            if !mostSpecific.isEmpty { nearest = mostSpecific }
+        }
+        return nearest.sorted().first
     }
 
     private static func ancestors(of branch: String, repoPath: String) async throws -> [String] {
@@ -621,38 +762,71 @@ enum GitStackTool {
     /// children. Returns the list of branches that were rebased. Throws on
     /// rebase conflict (after aborting) so the caller can surface an error.
     private static func restack(branch: String, repoPath: String, visited: inout Set<String>) async throws -> [String] {
-        if visited.contains(branch) { return [] } // cycle guard
-        visited.insert(branch)
+        // Snapshot the whole subtree (parent + fork point per descendant) BEFORE
+        // any rebase. Rebasing a mid-stack branch moves its tip, which would
+        // otherwise (a) orphan not-yet-moved descendants from git-inference and
+        // (b) shift the fork point used to select a child's own commits. Freezing
+        // the plan up front keeps the cascade correct for topology derived purely
+        // from git, with no recorded config.
+        let plan = try await restackPlan(root: branch, repoPath: repoPath, visited: &visited)
 
         var restacked: [String] = []
-        if let p = try await parent(of: branch, repoPath: repoPath) {
-            // Skip when the branch already sits on the parent's current tip:
-            // the parent hasn't moved, so rebasing would needlessly rewrite the
-            // branch's commits (new SHAs) and break descendants that reference
-            // the old tip. `p` being an ancestor of `branch` means up to date.
-            let upToDate = try await git(["-C", repoPath, "merge-base", "--is-ancestor", p, branch])
-            if upToDate.exitCode != 0 {
-                // Replay only the branch's own commits (fork point ..branch)
-                // onto the parent tip via --onto, so a rewritten parent does
-                // not drag duplicate commits along.
-                let forkPoint = try await git(["-C", repoPath, "merge-base", p, branch])
-                let base = forkPoint.output.trimmingCharacters(in: .whitespacesAndNewlines)
-                let onto = base.isEmpty
-                    ? ["-C", repoPath, "rebase", p, branch]
-                    : ["-C", repoPath, "rebase", "--onto", p, base, branch]
-                let rebase = try await git(onto)
-                if rebase.exitCode != 0 {
-                    _ = try await git(["-C", repoPath, "rebase", "--abort"])
-                    throw StackError("rebase of \(branch) onto \(p) failed:\n\(rebase.output)")
-                }
-                restacked.append(branch)
-            }
-        }
+        for step in plan {
+            // Skip when the branch already sits on the parent's current tip: the
+            // parent hasn't moved, so rebasing would needlessly rewrite commits
+            // (new SHAs) and break anything referencing the old tip.
+            let upToDate = try await git([
+                "-C", repoPath, "merge-base", "--is-ancestor", step.parent, step.branch,
+            ])
+            if upToDate.exitCode == 0 { continue }
 
-        for child in try await children(of: branch, repoPath: repoPath) {
-            restacked += try await restack(branch: child, repoPath: repoPath, visited: &visited)
+            // Replay only the branch's own commits (frozen fork point ..branch)
+            // onto the parent's current tip via --onto.
+            let onto = step.forkPoint.isEmpty
+                ? ["-C", repoPath, "rebase", step.parent, step.branch]
+                : ["-C", repoPath, "rebase", "--onto", step.parent, step.forkPoint, step.branch]
+            let rebase = try await git(onto)
+            if rebase.exitCode != 0 {
+                _ = try await git(["-C", repoPath, "rebase", "--abort"])
+                throw StackError("rebase of \(step.branch) onto \(step.parent) failed:\n\(rebase.output)")
+            }
+            restacked.append(step.branch)
         }
         return restacked
+    }
+
+    /// One branch to rebase and the inputs frozen at planning time.
+    private struct RestackStep {
+        let branch: String
+        let parent: String
+        /// Fork point (merge-base of parent and branch) captured before any
+        /// rebase, so `--onto` replays exactly this branch's own commits.
+        let forkPoint: String
+    }
+
+    /// BFS the descendant tree from `root`, recording each branch's parent and
+    /// current fork point. Parents precede their children so rebasing in order
+    /// lands each child on an already-updated parent. `visited` guards cycles.
+    private static func restackPlan(
+        root: String, repoPath: String, visited: inout Set<String>
+    ) async throws -> [RestackStep] {
+        var plan: [RestackStep] = []
+        var queue = [root]
+        while !queue.isEmpty {
+            let branch = queue.removeFirst()
+            if visited.contains(branch) { continue }
+            visited.insert(branch)
+
+            if let p = try await parent(of: branch, repoPath: repoPath) {
+                let mb = try await git(["-C", repoPath, "merge-base", p, branch])
+                let forkPoint = mb.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                plan.append(RestackStep(branch: branch, parent: p, forkPoint: forkPoint))
+            }
+            for child in try await children(of: branch, repoPath: repoPath) where !visited.contains(child) {
+                queue.append(child)
+            }
+        }
+        return plan
     }
 
     /// Stash the worktree (including untracked files), run `body`, then pop the
