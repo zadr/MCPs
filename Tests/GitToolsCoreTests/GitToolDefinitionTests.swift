@@ -14,7 +14,7 @@ final class GitToolDefinitionTests: XCTestCase {
     }
 
     func testToolNameConstant() {
-        XCTAssertEqual(GitTool.name, "git")
+        XCTAssertEqual(GitTool.name, "git-core")
     }
 
     func testDefinitionNameMatchesConstant() {

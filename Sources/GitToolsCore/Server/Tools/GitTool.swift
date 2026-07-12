@@ -2,7 +2,7 @@ import Foundation
 import MCP
 
 enum GitTool {
-    static let name = "git"
+    static let name = "git-core"
 
     private static let gitPath = "/usr/bin/git"
 
