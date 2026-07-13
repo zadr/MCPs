@@ -1110,7 +1110,7 @@ enum GitTool {
         if result.exitCode != 0 {
             return errorResult("git branch \(flag) failed:\n\(result.output)")
         }
-        return textResult(result.output)
+        return textResult("Deleted branch \(name).")
     }
 
     // MARK: - Branch Rename
