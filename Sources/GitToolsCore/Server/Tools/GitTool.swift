@@ -315,7 +315,7 @@ enum GitTool {
         if result.exitCode != 0 {
             return errorResult("git init failed:\n\(result.output)")
         }
-        return textResult(result.output)
+        return textResult("Initialized repository at \(repoPath).")
     }
 
     // MARK: - Status
