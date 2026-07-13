@@ -978,7 +978,10 @@ enum GitTool {
         if result.exitCode != 0 {
             return errorResult("git reset failed:\n\(result.output)")
         }
-        return textResult(result.output)
+        if files != nil {
+            return textResult("Unstaged files (reset to \(target)).")
+        }
+        return textResult("Reset --\(mode) to \(target).")
     }
 
     // MARK: - Stash
