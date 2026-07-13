@@ -936,7 +936,14 @@ enum GitTool {
         if result.exitCode != 0 {
             return errorResult("git checkout failed:\n\(result.output)")
         }
-        return textResult(result.output)
+
+        let branch = try? await git(["-C", repoPath, "rev-parse", "--abbrev-ref", "HEAD"])
+            .output.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let branch, !branch.isEmpty, branch != "HEAD" {
+            let prefix = createBranch ? "Created and checked out" : "Checked out"
+            return textResult("\(prefix) branch \(branch).")
+        }
+        return textResult("Checked out \(target).")
     }
 
     // MARK: - Reset
