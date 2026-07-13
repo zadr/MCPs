@@ -1167,7 +1167,18 @@ enum GitTool {
         if result.exitCode != 0 {
             return errorResult("git worktree add failed:\n\(result.output)")
         }
-        return textResult(result.output)
+
+        let checkedOut = try? await git(["-C", worktreePath, "rev-parse", "--abbrev-ref", "HEAD"])
+            .output.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var lines = ["Worktree added: \(worktreePath)"]
+        if createBranch, let branch {
+            lines.append("Branch created: \(branch)")
+        }
+        if let checkedOut, !checkedOut.isEmpty {
+            lines.append("Checked out branch: \(checkedOut)")
+        }
+        return textResult(lines.joined(separator: "\n"))
     }
 
     // MARK: - Worktree Remove
