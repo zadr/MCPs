@@ -17,16 +17,17 @@ let package = Package(
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "Logging", package: "swift-log"),
             ],
-            path: "Sources/GitToolsCore"
+            path: "git-tools/Sources/GitToolsCore"
         ),
         .executableTarget(
             name: "git-tools-mcp",
             dependencies: ["GitToolsCore"],
-            path: "Sources/git-tools-mcp"
+            path: "git-tools/Sources/git-tools-mcp"
         ),
         .testTarget(
             name: "GitToolsCoreTests",
-            dependencies: ["GitToolsCore"]
+            dependencies: ["GitToolsCore"],
+            path: "git-tools/Tests"
         ),
     ]
 )
