@@ -1199,7 +1199,7 @@ enum GitTool {
         if result.exitCode != 0 {
             return errorResult("git worktree remove failed:\n\(result.output)")
         }
-        return textResult(result.output)
+        return textResult("Worktree removed: \(worktreePath)")
     }
 
     // MARK: - Worktree Prune
