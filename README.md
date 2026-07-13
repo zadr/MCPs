@@ -1,4 +1,8 @@
 # MCPs
+
+## Why
+Sometimes the tools are noisier than they need to be. And sometimes, deterministic workflows are useful to avoid re-thinking to derive the same answer.
+
 ### `apple-tools-mcp`
 Wrappers around the following commands:
 - `notarytool`
