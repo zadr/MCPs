@@ -6,6 +6,7 @@ public enum ToolRegistry {
             ListTools.Result(tools: [
                 GitTool.definition,
                 GitStackTool.definition,
+                GitHubTool.definition,
             ])
         }
 
@@ -15,6 +16,8 @@ public enum ToolRegistry {
                 return try await GitTool.handle(params.arguments)
             case GitStackTool.name:
                 return try await GitStackTool.handle(params.arguments)
+            case GitHubTool.name:
+                return try await GitHubTool.handle(params.arguments)
             default:
                 throw MCPError.invalidParams("Unknown tool: \(params.name)")
             }
