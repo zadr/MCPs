@@ -3,11 +3,15 @@ import MCP
 public enum ToolRegistry {
     public static func registerAll(on server: Server) async {
         await server.withMethodHandler(ListTools.self) { _ in
-            ListTools.Result(tools: [
+            var tools = [
                 GitTool.definition,
                 GitStackTool.definition,
-                GitHubTool.definition,
-            ])
+            ]
+            // gh is optional: only advertise github-tools when it is installed.
+            if GitHubTool.isAvailable {
+                tools.append(GitHubTool.definition)
+            }
+            return ListTools.Result(tools: tools)
         }
 
         await server.withMethodHandler(CallTool.self) { params in

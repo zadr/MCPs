@@ -4,17 +4,22 @@ import MCP
 enum GitHubTool {
     static let name = "github-tools"
 
-    /// `gh` is not on a spawned process's default PATH. Resolve to the first
-    /// executable among the common install locations, falling back to a bare
-    /// name so PATH lookup still has a chance if the user installed elsewhere.
-    private static let ghPath: String = {
-        let candidates = [
-            "/opt/homebrew/bin/gh",
-            "/usr/local/bin/gh",
-            "\(NSHomeDirectory())/.local/bin/gh",
-        ]
-        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) } ?? "gh"
+    /// posix_spawn with an absolute path does no PATH search, so resolve `gh`
+    /// against $PATH ourselves. nil when $PATH is unset/empty or holds no
+    /// executable `gh`; the tool is then withheld from the registry entirely.
+    private static let ghPath: String? = {
+        guard let path = ProcessInfo.processInfo.environment["PATH"], !path.isEmpty else {
+            return nil
+        }
+        let fm = FileManager.default
+        return path.split(separator: ":", omittingEmptySubsequences: true)
+            .map { "\($0)/gh" }
+            .first { fm.isExecutableFile(atPath: $0) }
     }()
+
+    /// Whether `gh` was found on $PATH. The registry only advertises this tool
+    /// and routes calls to it when true.
+    static var isAvailable: Bool { ghPath != nil }
 
     private static let listLimit = 100
 
@@ -51,10 +56,16 @@ enum GitHubTool {
         guard let repoPath = args["repoPath"]?.stringValue else {
             throw MCPError.invalidParams("Missing required argument: repoPath")
         }
+        // Normally unreachable: the registry withholds this tool when gh is
+        // absent. Guard anyway so a direct call can't reach the spawner with a
+        // nil path.
+        guard let ghPath else {
+            throw MCPError.invalidParams("gh not found on $PATH. Install the GitHub CLI and ensure it is on PATH.")
+        }
 
         switch action {
         case "list-active-prs":
-            return try await handleListActivePRs(repoPath: repoPath)
+            return try await handleListActivePRs(ghPath: ghPath, repoPath: repoPath)
         default:
             throw MCPError.invalidParams("Unknown action: \(action). Valid actions: list-active-prs")
         }
@@ -62,9 +73,9 @@ enum GitHubTool {
 
     // MARK: - List Active PRs
 
-    private static func handleListActivePRs(repoPath: String) async throws -> CallTool.Result {
+    private static func handleListActivePRs(ghPath: String, repoPath: String) async throws -> CallTool.Result {
         // gh has no -C flag; it infers the repo from the cwd's git remote.
-        let result = try await gh([
+        let result = try await gh(ghPath, [
             "pr", "list",
             "--state", "open",
             "--limit", "\(listLimit)",
@@ -179,8 +190,8 @@ enum GitHubTool {
 
     // MARK: - Helpers
 
-    private static func gh(_ arguments: [String], workingDirectory: String) async throws -> ShellCommand.Result {
-        try await ShellCommand.run(ghPath, arguments: arguments, workingDirectory: workingDirectory)
+    private static func gh(_ executable: String, _ arguments: [String], workingDirectory: String) async throws -> ShellCommand.Result {
+        try await ShellCommand.run(executable, arguments: arguments, workingDirectory: workingDirectory)
     }
 
     private static func textResult(_ text: String) -> CallTool.Result {
