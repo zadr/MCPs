@@ -68,7 +68,7 @@ enum GitHubTool {
             "pr", "list",
             "--state", "open",
             "--limit", "\(listLimit)",
-            "--json", "number,title,isDraft,state,baseRefName,statusCheckRollup",
+            "--json", "number,title,isDraft,state,baseRefName,statusCheckRollup,mergeStateStatus",
         ], workingDirectory: repoPath)
 
         if result.exitCode != 0 {
@@ -102,6 +102,7 @@ enum GitHubTool {
             "#\(pr.number)  \(pr.title)",
             "  state: \(pr.isDraft ? "draft" : "open")",
             "  target: \(pr.baseRefName)",
+            "  needs-rebase: \(pr.needsRebase ? "yes" : "no")",
         ]
 
         let rollup = pr.statusCheckRollup ?? []
@@ -129,6 +130,14 @@ enum GitHubTool {
         let state: String
         let baseRefName: String
         let statusCheckRollup: [Check]?
+        let mergeStateStatus: String?
+
+        /// BEHIND: base advanced past the PR's merge-base. DIRTY: the merge has
+        /// conflicts. Both require the author to rebase (or merge) onto base.
+        /// nil when gh omits the field (e.g. permissions) — reported as no.
+        var needsRebase: Bool {
+            mergeStateStatus == "BEHIND" || mergeStateStatus == "DIRTY"
+        }
     }
 
     /// A statusCheckRollup entry. gh emits two node shapes discriminated by
