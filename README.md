@@ -24,8 +24,9 @@ Wrappers around the following `git` commands:
 
 And workflows sequencing `git` commands together:
 - `branch_create`, `branch_delete`, `branch_rename`, `branch_prune` and `branch_find_duplicates` to manage and clean up branches
-- `wortree_list`, `wortree_add`, `worktree_remove` and `worktree_prune` to manage and clean up worktrees
+- `worktree_list`, `worktree_find_by_branch_name`, `worktree_add`, `worktree_remove` and `worktree_prune` to manage and clean up worktrees
 - `stack` management to visualize, sync, split, rebase, merge, and clean up branches of branches
+- `list-active-prs` to list open and draft pull requests, flagging failing and pending CI checks per PR
 
 ### `process-watch-tool`
 Keep an eye on processes - builds, other MCPs, and so on - without wasting context in the main session
