@@ -108,7 +108,7 @@ enum GitHubTool {
         return textResult(blocks.joined(separator: "\n\n"))
     }
 
-    private static func format(pr: PullRequest) -> String {
+    static func format(pr: PullRequest) -> String {
         var lines = [
             "#\(pr.number)  \(pr.title)",
             "  state: \(pr.isDraft ? "draft" : "open")",
@@ -117,24 +117,28 @@ enum GitHubTool {
         ]
 
         let rollup = pr.statusCheckRollup ?? []
-        let failing = rollup.filter(\.isFailing)
+        let failing = rollup.filter { $0.outcome == .failing }
+        let pending = rollup.filter { $0.outcome == .pending }
         if rollup.isEmpty {
             lines.append("  checks: none")
-        } else if failing.isEmpty {
-            lines.append("  checks: passing")
-        } else {
+        } else if !failing.isEmpty {
+            // Failing dominates: a real failure is never masked by in-flight checks.
             lines.append("  failing checks:")
             for check in failing {
                 let suffix = check.url.map { "  (\($0))" } ?? ""
                 lines.append("    - \(check.displayName)\(suffix)")
             }
+        } else if !pending.isEmpty {
+            lines.append("  checks: pending (\(pending.count) running)")
+        } else {
+            lines.append("  checks: passing")
         }
         return lines.joined(separator: "\n")
     }
 
     // MARK: - Decoding
 
-    private struct PullRequest: Decodable {
+    struct PullRequest: Decodable {
         let number: Int
         let title: String
         let isDraft: Bool
@@ -151,13 +155,19 @@ enum GitHubTool {
         }
     }
 
+    enum CheckOutcome {
+        case passing, pending, failing
+    }
+
     /// A statusCheckRollup entry. gh emits two node shapes discriminated by
-    /// `__typename`: CheckRun (Actions/apps) with conclusion+detailsUrl, and
-    /// StatusContext (legacy commit statuses) with state+targetUrl. All fields
-    /// are optional so either shape decodes and gh adding fields is tolerated.
-    private struct Check: Decodable {
+    /// `__typename`: CheckRun (Actions/apps) with status+conclusion+detailsUrl,
+    /// and StatusContext (legacy commit statuses) with state+targetUrl. All
+    /// fields are optional so either shape decodes and gh adding fields is
+    /// tolerated.
+    struct Check: Decodable {
         let typename: String?
         let name: String?
+        let status: String?
         let conclusion: String?
         let detailsUrl: String?
         let context: String?
@@ -166,17 +176,41 @@ enum GitHubTool {
 
         enum CodingKeys: String, CodingKey {
             case typename = "__typename"
-            case name, conclusion, detailsUrl, context, state, targetUrl
+            case name, status, conclusion, detailsUrl, context, state, targetUrl
         }
 
-        var isFailing: Bool {
+        /// gh emits `conclusion: ""` for a CheckRun that has not concluded, so an
+        /// empty string must read as "no value", not as a concluded result.
+        private static func normalized(_ value: String?) -> String? {
+            guard let value, !value.isEmpty else { return nil }
+            return value
+        }
+
+        var outcome: CheckOutcome {
             let checkRunFailures: Set<String> = [
                 "FAILURE", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE", "ACTION_REQUIRED",
             ]
             let statusFailures: Set<String> = ["FAILURE", "ERROR"]
-            if let conclusion, checkRunFailures.contains(conclusion) { return true }
-            if let state, statusFailures.contains(state) { return true }
-            return false
+            let inProgress: Set<String> = [
+                "QUEUED", "IN_PROGRESS", "PENDING", "WAITING", "REQUESTED",
+            ]
+            let statusPending: Set<String> = ["PENDING", "EXPECTED"]
+
+            let conclusion = Self.normalized(conclusion)
+            let status = Self.normalized(status)
+            let state = Self.normalized(state)
+
+            if let conclusion, checkRunFailures.contains(conclusion) { return .failing }
+            if let state, statusFailures.contains(state) { return .failing }
+
+            // CheckRun: unconcluded when status is in-flight or conclusion absent.
+            if let status, inProgress.contains(status) { return .pending }
+            if status != nil, conclusion == nil { return .pending }
+            // StatusContext: pending state, or (legacy) no terminal signal at all.
+            if let state, statusPending.contains(state) { return .pending }
+            if status == nil, conclusion == nil, state == nil { return .pending }
+
+            return .passing
         }
 
         var displayName: String {
