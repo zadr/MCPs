@@ -248,4 +248,45 @@ final class GitToolHandleTests: XCTestCase {
         XCTAssertEqual(result.isError, false)
         XCTAssertTrue(text(result).contains(repoPath))
     }
+
+    func testWorktreeFindByBranchName() async throws {
+        try await initCommittedRepo()
+        let worktreePath = repoPath + "-feature"
+        _ = try await call([
+            "action": .string("worktree_add"),
+            "repoPath": .string(repoPath),
+            "worktreePath": .string(worktreePath),
+            "branch": .string("feature"),
+            "createBranch": .bool(true),
+        ])
+
+        // git canonicalizes the worktree path (e.g. /var -> /private/var on macOS),
+        // so match the trailing component rather than the literal we passed in.
+        let found = try await call([
+            "action": .string("worktree_find_by_branch_name"),
+            "repoPath": .string(repoPath),
+            "branch": .string("feature"),
+        ])
+        XCTAssertEqual(found.isError, false)
+        XCTAssertTrue(text(found).hasSuffix("-feature"))
+
+        // Fully-qualified ref resolves to the same worktree.
+        let qualified = try await call([
+            "action": .string("worktree_find_by_branch_name"),
+            "repoPath": .string(repoPath),
+            "branch": .string("refs/heads/feature"),
+        ])
+        XCTAssertEqual(text(qualified), text(found))
+    }
+
+    func testWorktreeFindByBranchNameNotFound() async throws {
+        try await initCommittedRepo()
+        let result = try await call([
+            "action": .string("worktree_find_by_branch_name"),
+            "repoPath": .string(repoPath),
+            "branch": .string("nonexistent"),
+        ])
+        XCTAssertEqual(result.isError, false)
+        XCTAssertTrue(text(result).contains("No worktree found"))
+    }
 }

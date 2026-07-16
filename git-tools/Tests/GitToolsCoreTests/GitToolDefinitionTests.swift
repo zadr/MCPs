@@ -51,6 +51,7 @@ final class GitToolDefinitionTests: XCTestCase {
             "commit", "push", "pull", "checkout", "reset", "stash",
             "merge", "rebase", "cherry_pick", "branch_create",
             "branch_delete", "branch_rename", "worktree_list",
+            "worktree_find_by_branch_name",
             "worktree_add", "worktree_remove", "worktree_prune",
             "branch_prune", "branch_find_duplicates",
         ]

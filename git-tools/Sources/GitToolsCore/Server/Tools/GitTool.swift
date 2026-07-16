@@ -9,7 +9,7 @@ enum GitTool {
     static var definition: Tool {
         Tool(
             name: name,
-            description: "Git version control. Comprehensive git frontend supporting init, read operations (status, log, diff, blame, branch_info, merge_analysis, show, tag, remote) and write operations (add, mv, commit, push, pull, checkout, reset, stash, merge, rebase, cherry_pick). Branch management (branch_create, branch_delete, branch_rename) and worktree support (worktree_list, worktree_add, worktree_remove).",
+            description: "Git version control. Comprehensive git frontend supporting init, read operations (status, log, diff, blame, branch_info, merge_analysis, show, tag, remote) and write operations (add, mv, commit, push, pull, checkout, reset, stash, merge, rebase, cherry_pick). Branch management (branch_create, branch_delete, branch_rename) and worktree support (worktree_list, worktree_find_by_branch_name, worktree_add, worktree_remove).",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -41,13 +41,14 @@ enum GitTool {
                             .string("branch_delete"),
                             .string("branch_rename"),
                             .string("worktree_list"),
+                            .string("worktree_find_by_branch_name"),
                             .string("worktree_add"),
                             .string("worktree_remove"),
                             .string("worktree_prune"),
                             .string("branch_prune"),
                             .string("branch_find_duplicates"),
                         ]),
-                        "description": .string("The git action to perform. One of: init, status, log, diff, blame, branch_info, merge_analysis, show, tag, remote, add, mv, commit, push, pull, checkout, reset, stash, merge, rebase, cherry_pick, branch_create, branch_delete, branch_rename, worktree_list, worktree_add, worktree_remove, worktree_prune, branch_prune, branch_find_duplicates"),
+                        "description": .string("The git action to perform. One of: init, status, log, diff, blame, branch_info, merge_analysis, show, tag, remote, add, mv, commit, push, pull, checkout, reset, stash, merge, rebase, cherry_pick, branch_create, branch_delete, branch_rename, worktree_list, worktree_find_by_branch_name, worktree_add, worktree_remove, worktree_prune, branch_prune, branch_find_duplicates"),
                     ]),
                     "repoPath": .object([
                         "type": .string("string"),
@@ -140,7 +141,7 @@ enum GitTool {
                     ]),
                     "branch": .object([
                         "type": .string("string"),
-                        "description": .string("Branch name (for push, pull, merge, worktree_add)"),
+                        "description": .string("Branch name (for push, pull, merge, worktree_add, worktree_find_by_branch_name)"),
                     ]),
                     "force": .object([
                         "type": .string("boolean"),
@@ -291,6 +292,8 @@ enum GitTool {
             return try await handleBranchRename(args: args, repoPath: repoPath)
         case "worktree_list":
             return try await handleWorktreeList(repoPath: repoPath)
+        case "worktree_find_by_branch_name":
+            return try await handleWorktreeFindByBranchName(args: args, repoPath: repoPath)
         case "worktree_add":
             return try await handleWorktreeAdd(args: args, repoPath: repoPath)
         case "worktree_remove":
@@ -303,7 +306,7 @@ enum GitTool {
             return try await handleBranchFindDuplicates(args: args, repoPath: repoPath)
         default:
             throw MCPError.invalidParams(
-                "Unknown action: \(action). Valid actions: init, status, log, diff, blame, branch_info, merge_analysis, show, tag, remote, add, mv, commit, push, pull, checkout, reset, stash, merge, rebase, cherry_pick, branch_create, branch_delete, branch_rename, worktree_list, worktree_add, worktree_remove, worktree_prune, branch_prune, branch_find_duplicates"
+                "Unknown action: \(action). Valid actions: init, status, log, diff, blame, branch_info, merge_analysis, show, tag, remote, add, mv, commit, push, pull, checkout, reset, stash, merge, rebase, cherry_pick, branch_create, branch_delete, branch_rename, worktree_list, worktree_find_by_branch_name, worktree_add, worktree_remove, worktree_prune, branch_prune, branch_find_duplicates"
             )
         }
     }
@@ -1142,6 +1145,50 @@ enum GitTool {
             return textResult("No worktrees found.")
         }
         return textResult("Worktrees:\n\(output)")
+    }
+
+    // MARK: - Worktree Find By Branch Name
+
+    private static func handleWorktreeFindByBranchName(args: [String: Value], repoPath: String) async throws -> CallTool.Result {
+        guard let branch = args["branch"]?.stringValue, !branch.isEmpty else {
+            throw MCPError.invalidParams("Missing required argument: branch (for worktree_find_by_branch_name)")
+        }
+
+        let result = try await git(["-C", repoPath, "worktree", "list", "--porcelain"])
+        if result.exitCode != 0 {
+            return errorResult("git worktree list failed:\n\(result.output)")
+        }
+
+        // Match against the bare name and the fully-qualified ref, so callers may pass either.
+        let target = branch.hasPrefix("refs/heads/")
+            ? String(branch.dropFirst("refs/heads/".count))
+            : branch
+        let matches = parseWorktreeBranchRefs(result.output)
+            .filter { $0.branch == target }
+            .map { $0.path }
+
+        guard let path = matches.first else {
+            return textResult("No worktree found for branch \(target).")
+        }
+        return textResult(path)
+    }
+
+    /// Every worktree paired with its checked-out branch (main and linked, excluding detached HEADs).
+    private static func parseWorktreeBranchRefs(_ output: String) -> [(path: String, branch: String)] {
+        var refs: [(path: String, branch: String)] = []
+        var path: String?
+        for line in output.components(separatedBy: "\n") {
+            if line.hasPrefix("worktree ") {
+                path = String(line.dropFirst("worktree ".count))
+            } else if line.hasPrefix("branch "), let currentPath = path {
+                let refPath = String(line.dropFirst("branch ".count))
+                let name = refPath.hasPrefix("refs/heads/")
+                    ? String(refPath.dropFirst("refs/heads/".count))
+                    : refPath
+                refs.append((path: currentPath, branch: name))
+            }
+        }
+        return refs
     }
 
     // MARK: - Worktree Add
