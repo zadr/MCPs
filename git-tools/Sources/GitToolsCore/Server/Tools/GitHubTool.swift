@@ -26,7 +26,7 @@ enum GitHubTool {
     static var definition: Tool {
         Tool(
             name: name,
-            description: "GitHub operations via the gh CLI. Supports list-active-prs (open and draft pull requests with per-PR check health).",
+            description: "GitHub operations via the gh CLI. Supports list-active-prs (open and draft pull requests with per-PR check health and merge state, including conflicts).",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -113,7 +113,7 @@ enum GitHubTool {
             "#\(pr.number)  \(pr.title)",
             "  state: \(pr.isDraft ? "draft" : "open")",
             "  target: \(pr.baseRefName)",
-            "  needs-rebase: \(pr.needsRebase ? "yes" : "no")",
+            "  merge: \(pr.mergeState.description)",
         ]
 
         let rollup = pr.statusCheckRollup ?? []
@@ -147,11 +147,36 @@ enum GitHubTool {
         let statusCheckRollup: [Check]?
         let mergeStateStatus: String?
 
-        /// BEHIND: base advanced past the PR's merge-base. DIRTY: the merge has
-        /// conflicts. Both require the author to rebase (or merge) onto base.
-        /// nil when gh omits the field (e.g. permissions) — reported as no.
-        var needsRebase: Bool {
-            mergeStateStatus == "BEHIND" || mergeStateStatus == "DIRTY"
+        var mergeState: MergeState {
+            MergeState(mergeStateStatus)
+        }
+    }
+
+    /// Distilled from GitHub's mergeStateStatus. `conflicting` (DIRTY) means the
+    /// merge itself fails and the author must resolve conflicts; `behind` means
+    /// base moved ahead but merges cleanly, needing only a rebase/update.
+    /// Everything else collapses to `clean` — mergeable as far as this tool
+    /// reports. `unknown` covers gh omitting the field (permissions) or GitHub
+    /// still computing mergeability.
+    enum MergeState: Equatable {
+        case conflicting, behind, clean, unknown
+
+        init(_ status: String?) {
+            switch status {
+            case "DIRTY": self = .conflicting
+            case "BEHIND": self = .behind
+            case .some: self = .clean
+            case nil: self = .unknown
+            }
+        }
+
+        var description: String {
+            switch self {
+            case .conflicting: return "conflicting"
+            case .behind: return "behind base (needs rebase)"
+            case .clean: return "clean"
+            case .unknown: return "unknown"
+            }
         }
     }
 

@@ -89,4 +89,33 @@ final class GitHubToolDefinitionTests: XCTestCase {
             XCTFail("unexpected error: \(error)")
         }
     }
+
+    // MARK: - Merge state
+
+    private func decodePR(mergeStateStatus: String?) throws -> GitHubTool.PullRequest {
+        let mergeField = mergeStateStatus.map { "\"\($0)\"" } ?? "null"
+        let json = """
+        {"number":1001,"title":"t","isDraft":false,"state":"OPEN",
+         "baseRefName":"main","statusCheckRollup":[],"mergeStateStatus":\(mergeField)}
+        """
+        return try JSONDecoder().decode(GitHubTool.PullRequest.self, from: Data(json.utf8))
+    }
+
+    func testMergeStateMapping() throws {
+        XCTAssertEqual(try decodePR(mergeStateStatus: "DIRTY").mergeState, .conflicting)
+        XCTAssertEqual(try decodePR(mergeStateStatus: "BEHIND").mergeState, .behind)
+        XCTAssertEqual(try decodePR(mergeStateStatus: "CLEAN").mergeState, .clean)
+        XCTAssertEqual(try decodePR(mergeStateStatus: "BLOCKED").mergeState, .clean)
+        XCTAssertEqual(try decodePR(mergeStateStatus: nil).mergeState, .unknown)
+    }
+
+    func testFormatReportsConflicting() throws {
+        let output = GitHubTool.format(pr: try decodePR(mergeStateStatus: "DIRTY"))
+        XCTAssertTrue(output.contains("merge: conflicting"), output)
+    }
+
+    func testFormatReportsClean() throws {
+        let output = GitHubTool.format(pr: try decodePR(mergeStateStatus: "CLEAN"))
+        XCTAssertTrue(output.contains("merge: clean"), output)
+    }
 }
