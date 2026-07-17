@@ -877,7 +877,11 @@ enum GitTool {
         let force = args["force"]?.boolValue ?? false
         let setUpstream = args["setUpstream"]?.boolValue ?? false
 
-        var gitArgs = ["-C", repoPath, "push"]
+        // --porcelain emits one tab-delimited status line per ref and drops the
+        // remote-side hint banner ("Create a pull request..."); --no-progress
+        // drops the counting/compressing chatter. Together they collapse a push
+        // to its essential per-ref result.
+        var gitArgs = ["-C", repoPath, "push", "--porcelain", "--no-progress"]
         if force {
             gitArgs.append("--force")
         }
@@ -891,9 +895,27 @@ enum GitTool {
 
         let result = try await git(gitArgs)
         if result.exitCode != 0 {
-            return errorResult("git push failed:\n\(result.output)")
+            return errorResult("git push failed:\n\(summarizePush(result.output))")
         }
-        return textResult(result.output)
+        return textResult(summarizePush(result.output))
+    }
+
+    /// Distills `git push --porcelain` output to its per-ref result lines.
+    /// Porcelain emits `<flag>\t<from>:<to>\t<summary>` per ref plus bookkeeping
+    /// lines ("To <url>", a trailing "Done"); keep only refs, rendered as
+    /// `<summary>  <ref>`. Falls back to the trimmed raw output if nothing
+    /// parses (e.g. "Everything up-to-date" on stderr).
+    static func summarizePush(_ output: String) -> String {
+        let refLines = output.split(separator: "\n").compactMap { line -> String? in
+            let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
+            guard fields.count >= 3 else { return nil }
+            let ref = fields[1].split(separator: ":").last.map(String.init) ?? String(fields[1])
+            return "\(fields[2])  \(ref)"
+        }
+        if refLines.isEmpty {
+            return output.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return refLines.joined(separator: "\n")
     }
 
     // MARK: - Pull

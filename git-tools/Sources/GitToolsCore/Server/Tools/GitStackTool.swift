@@ -303,8 +303,8 @@ enum GitStackTool {
             msg += " Restacked: \(restacked.joined(separator: ", "))."
         }
         if push {
-            let pushResult = try await git(["-C", repoPath, "push", "--force-with-lease"])
-            msg += "\nPush: \(pushResult.output.trimmingCharacters(in: .whitespacesAndNewlines))"
+            let pushResult = try await git(["-C", repoPath, "push", "--porcelain", "--no-progress", "--force-with-lease"])
+            msg += "\nPush: \(GitTool.summarizePush(pushResult.output))"
         }
         return textResult(msg)
     }
@@ -496,11 +496,11 @@ enum GitStackTool {
         let remote = args["remote"]?.stringValue ?? "origin"
         let force = args["force"]?.boolValue ?? false
         let forceFlag = force ? "--force" : "--force-with-lease"
-        let result = try await git(["-C", repoPath, "push", forceFlag, remote, branch])
+        let result = try await git(["-C", repoPath, "push", "--porcelain", "--no-progress", forceFlag, remote, branch])
         if result.exitCode != 0 {
-            return errorResult("git push failed:\n\(result.output)")
+            return errorResult("git push failed:\n\(GitTool.summarizePush(result.output))")
         }
-        return textResult("Pushed \(branch) to \(remote).\n\(result.output.trimmingCharacters(in: .whitespacesAndNewlines))")
+        return textResult("Pushed \(branch) to \(remote).\n\(GitTool.summarizePush(result.output))")
     }
 
     private static func handleSync(args: [String: Value], repoPath: String) async throws -> CallTool.Result {
