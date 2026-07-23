@@ -900,17 +900,18 @@ enum GitTool {
         return textResult(summarizePush(result.output))
     }
 
-    /// Distills `git push --porcelain` output to its per-ref result lines.
+    /// Distills `git push --porcelain` output to `pushed <ref>` per updated ref.
     /// Porcelain emits `<flag>\t<from>:<to>\t<summary>` per ref plus bookkeeping
-    /// lines ("To <url>", a trailing "Done"); keep only refs, rendered as
-    /// `<summary>  <ref>`. Falls back to the trimmed raw output if nothing
-    /// parses (e.g. "Everything up-to-date" on stderr).
+    /// lines ("To <url>", a trailing "Done"). An up-to-date ref (`=` flag) moved
+    /// nothing, so it reads as "up to date" rather than "pushed". Falls back to
+    /// the trimmed raw output if nothing parses (e.g. "Everything up-to-date").
     static func summarizePush(_ output: String) -> String {
         let refLines = output.split(separator: "\n").compactMap { line -> String? in
             let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
             guard fields.count >= 3 else { return nil }
             let ref = fields[1].split(separator: ":").last.map(String.init) ?? String(fields[1])
-            return "\(fields[2])  \(ref)"
+            let upToDate = fields[0] == "="
+            return "\(upToDate ? "up to date" : "pushed") \(ref)"
         }
         if refLines.isEmpty {
             return output.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -5,36 +5,43 @@ final class GitPushSummaryTests: XCTestCase {
 
     func testNewBranch() {
         let output = """
-        To github.com:zadr/Atelier.git
+        To github.com:example/repo.git
         *\trefs/heads/fix/x:refs/heads/fix/x\t[new branch]
         Done
         """
-        XCTAssertEqual(GitTool.summarizePush(output), "[new branch]  refs/heads/fix/x")
+        XCTAssertEqual(GitTool.summarizePush(output), "pushed refs/heads/fix/x")
     }
 
     func testForcedUpdateDropsBanner() {
         let output = """
-        To github.com:zadr/Atelier.git
+        To github.com:example/repo.git
         +\trefs/heads/refactor/y:refs/heads/refactor/y\td6b76d3c...365c33bf (forced update)
         Done
         """
-        XCTAssertEqual(
-            GitTool.summarizePush(output),
-            "d6b76d3c...365c33bf (forced update)  refs/heads/refactor/y"
-        )
+        XCTAssertEqual(GitTool.summarizePush(output), "pushed refs/heads/refactor/y")
     }
 
     func testMultipleRefs() {
         let output = """
-        To github.com:zadr/Atelier.git
+        To github.com:example/repo.git
         \trefs/heads/a:refs/heads/a\t111..222
         *\trefs/heads/b:refs/heads/b\t[new branch]
         Done
         """
         XCTAssertEqual(
             GitTool.summarizePush(output),
-            "111..222  refs/heads/a\n[new branch]  refs/heads/b"
+            "pushed refs/heads/a\npushed refs/heads/b"
         )
+    }
+
+    func testUpToDateRefReadsAsUpToDate() {
+        // `=` flag: ref existed remotely and moved nothing.
+        let output = """
+        To github.com:example/repo.git
+        =\trefs/heads/a:refs/heads/a\t[up to date]
+        Done
+        """
+        XCTAssertEqual(GitTool.summarizePush(output), "up to date refs/heads/a")
     }
 
     func testUpToDateFallsBackToRaw() {
