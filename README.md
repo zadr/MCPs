@@ -30,6 +30,7 @@ And workflows sequencing `git` commands together:
 ### `github-tools`
 Wrappers around `gh`, advertised only when `gh` is on `$PATH`:
 - `list-active-prs` to list open and draft pull requests, flagging failing and pending CI checks per PR
+- `pr-status` to fetch one PR's status by number or URL, same output as `list-active-prs`
 - `wait-for-checks` to poll a single PR until its CI checks settle, then report passing/failing
 
 ### `process-watch-tool`

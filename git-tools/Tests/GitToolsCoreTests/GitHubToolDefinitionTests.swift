@@ -44,7 +44,7 @@ final class GitHubToolDefinitionTests: XCTestCase {
         let properties = json["properties"] as? [String: Any]
         let actionProp = properties?["action"] as? [String: Any]
         let enumValues = actionProp?["enum"] as? [String]
-        XCTAssertEqual(enumValues, ["list-active-prs", "wait-for-checks"])
+        XCTAssertEqual(enumValues, ["list-active-prs", "pr-status", "wait-for-checks"])
     }
 
     func testSchemaExposesWaitForChecksProperties() throws {
@@ -102,6 +102,20 @@ final class GitHubToolDefinitionTests: XCTestCase {
         do {
             _ = try await GitHubTool.handle([
                 "action": .string("wait-for-checks"),
+                "repoPath": .string("/tmp"),
+            ])
+            XCTFail("expected throw")
+        } catch let error as MCPError {
+            XCTAssertTrue("\(error)".contains("pr"), "\(error)")
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
+    func testPRStatusMissingPRThrows() async {
+        do {
+            _ = try await GitHubTool.handle([
+                "action": .string("pr-status"),
                 "repoPath": .string("/tmp"),
             ])
             XCTFail("expected throw")

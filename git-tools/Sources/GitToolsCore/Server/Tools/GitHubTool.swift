@@ -30,7 +30,7 @@ enum GitHubTool {
     static var definition: Tool {
         Tool(
             name: name,
-            description: "GitHub operations via the gh CLI. Supports list-active-prs (open and draft pull requests with per-PR check health and merge state, including conflicts) and wait-for-checks (poll a single PR until its CI checks finish, then report the outcome).",
+            description: "GitHub operations via the gh CLI. Supports list-active-prs (open and draft pull requests with per-PR check health and merge state, including conflicts), pr-status (one PR's status by number or URL, same block as list-active-prs), and wait-for-checks (poll a single PR until its CI checks finish, then report the outcome).",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -38,17 +38,18 @@ enum GitHubTool {
                         "type": .string("string"),
                         "enum": .array([
                             .string("list-active-prs"),
+                            .string("pr-status"),
                             .string("wait-for-checks"),
                         ]),
-                        "description": .string("The GitHub action to perform. One of: list-active-prs, wait-for-checks"),
+                        "description": .string("The GitHub action to perform. One of: list-active-prs, pr-status, wait-for-checks"),
                     ]),
                     "repoPath": .object([
                         "type": .string("string"),
                         "description": .string("Absolute path to a local clone; gh infers the repository from its remote"),
                     ]),
                     "pr": .object([
-                        "type": .string("integer"),
-                        "description": .string("PR number to wait on (required for wait-for-checks)"),
+                        "type": .string("string"),
+                        "description": .string("PR number or URL (required for pr-status and wait-for-checks)"),
                     ]),
                     "pollSeconds": .object([
                         "type": .string("integer"),
@@ -79,17 +80,24 @@ enum GitHubTool {
         switch action {
         case "list-active-prs":
             return try await handleListActivePRs(ghPath: ghPath, repoPath: repoPath)
+        case "pr-status":
+            return try await handlePRStatus(ghPath: ghPath, repoPath: repoPath, pr: prArg(args, action: action))
         case "wait-for-checks":
-            guard let pr = args["pr"]?.intValue ?? args["pr"]?.stringValue.flatMap(Int.init) else {
-                throw MCPError.invalidParams("Missing required argument for wait-for-checks: pr")
-            }
             let poll = max(minPollSeconds, args["pollSeconds"]?.intValue ?? defaultPollSeconds)
             return try await handleWaitForChecks(
-                ghPath: ghPath, repoPath: repoPath, pr: pr, pollSeconds: poll
+                ghPath: ghPath, repoPath: repoPath, pr: prArg(args, action: action), pollSeconds: poll
             )
         default:
-            throw MCPError.invalidParams("Unknown action: \(action). Valid actions: list-active-prs, wait-for-checks")
+            throw MCPError.invalidParams("Unknown action: \(action). Valid actions: list-active-prs, pr-status, wait-for-checks")
         }
+    }
+
+    /// The `pr` argument as gh accepts it: a number or a PR URL. Numeric JSON
+    /// values are stringified so callers may pass either `123` or `"123"`.
+    private static func prArg(_ args: [String: Value], action: String) throws -> String {
+        if let s = args["pr"]?.stringValue, !s.isEmpty { return s }
+        if let n = args["pr"]?.intValue { return "\(n)" }
+        throw MCPError.invalidParams("Missing required argument for \(action): pr")
     }
 
     // MARK: - List Active PRs
@@ -129,13 +137,26 @@ enum GitHubTool {
         return textResult(blocks.joined(separator: "\n\n"))
     }
 
+    // MARK: - PR Status
+
+    /// One-shot fetch of a single PR, rendered with the same block as
+    /// list-active-prs. `pr` is a number, URL, or branch (passed to gh verbatim).
+    private static func handlePRStatus(
+        ghPath: String, repoPath: String, pr: String
+    ) async throws -> CallTool.Result {
+        switch await fetchPR(ghPath: ghPath, repoPath: repoPath, pr: pr) {
+        case .success(let value): return textResult(format(pr: value))
+        case .failure(let result): return result
+        }
+    }
+
     // MARK: - Wait For Checks
 
     /// Polls until no checks are pending. No timeout: a wedged check keeps this
     /// running until the checks settle or the host cancels the call (which
     /// propagates through Task.sleep and kills the in-flight gh child).
     private static func handleWaitForChecks(
-        ghPath: String, repoPath: String, pr: Int, pollSeconds: Int
+        ghPath: String, repoPath: String, pr: String, pollSeconds: Int
     ) async throws -> CallTool.Result {
         while true {
             let fetched: PullRequest
@@ -161,15 +182,16 @@ enum GitHubTool {
         case failure(CallTool.Result)
     }
 
-    /// One `gh pr view` fetch. `.failure` carries a ready-to-return error block
-    /// (auth-aware, mirroring list); `.success` the decoded PR.
+    /// One `gh pr view` fetch. `pr` is passed to gh verbatim, so it accepts a
+    /// number, a PR URL, or a branch. `.failure` carries a ready-to-return error
+    /// block (auth-aware, mirroring list); `.success` the decoded PR.
     private static func fetchPR(
-        ghPath: String, repoPath: String, pr: Int
+        ghPath: String, repoPath: String, pr: String
     ) async -> FetchOutcome {
         let result: ShellCommand.Result
         do {
             result = try await gh(ghPath, [
-                "pr", "view", "\(pr)", "--json", prJSONFields,
+                "pr", "view", pr, "--json", prJSONFields,
             ], workingDirectory: repoPath)
         } catch {
             return .failure(errorResult("gh pr view failed: \(error)"))
