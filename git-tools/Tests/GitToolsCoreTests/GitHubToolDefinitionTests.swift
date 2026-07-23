@@ -200,4 +200,38 @@ final class GitHubToolDefinitionTests: XCTestCase {
         let rollup = try XCTUnwrap(pr.statusCheckRollup)
         XCTAssertTrue(rollup.contains { $0.outcome == .pending })
     }
+
+    // classifyWatch is the exit-code + stderr contract the appear-poll loop
+    // turns on. The overloaded case is exit 1: "no checks reported" means retry,
+    // anything else at exit 1 means a real failing terminal state.
+    func testClassifyNoChecksRetriesRegardlessOfExitCode() {
+        let stderr = "no checks reported on the 'my-branch' branch"
+        // gh has emitted this at both exit 1 and exit 8 across versions; neither
+        // may be mistaken for a terminal state.
+        XCTAssertEqual(GitHubTool.classifyWatch(exitCode: 1, stderr: stderr), .noChecksYet)
+        XCTAssertEqual(GitHubTool.classifyWatch(exitCode: 8, stderr: stderr), .noChecksYet)
+    }
+
+    func testClassifyAllPassSettles() {
+        XCTAssertEqual(GitHubTool.classifyWatch(exitCode: 0, stderr: ""), .settled)
+    }
+
+    func testClassifyPendingSettles() {
+        // Exit 8 with checks present: gh watched to a terminal render.
+        XCTAssertEqual(GitHubTool.classifyWatch(exitCode: 8, stderr: ""), .settled)
+    }
+
+    func testClassifyFailingSettles() {
+        // Exit 1 without the no-checks string is a genuine failing state.
+        XCTAssertEqual(GitHubTool.classifyWatch(exitCode: 1, stderr: ""), .settled)
+    }
+
+    func testClassifyAuthError() {
+        let stderr = "gh auth login required"
+        XCTAssertEqual(GitHubTool.classifyWatch(exitCode: 4, stderr: stderr), .authError)
+    }
+
+    func testClassifyOtherError() {
+        XCTAssertEqual(GitHubTool.classifyWatch(exitCode: 2, stderr: "boom"), .otherError("boom"))
+    }
 }

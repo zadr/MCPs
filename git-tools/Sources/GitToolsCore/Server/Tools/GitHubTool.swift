@@ -152,11 +152,45 @@ enum GitHubTool {
 
     // MARK: - Wait For Checks
 
-    /// Blocks on `gh pr checks --watch`, which waits server-side until the PR's
-    /// checks finish, then renders the same block as pr-status. One child, no
-    /// per-tick round-trip. No timeout: gh watches until checks settle or the
-    /// host cancels the call (which kills the in-flight gh child).
-    /// `intervalSeconds` is gh's refresh cadence in watch mode.
+    /// How one `gh pr checks --watch` run resolved, decided from its exit code
+    /// and captured stderr alone.
+    enum WatchOutcome: Equatable {
+        /// The watch concluded on a real check state (all pass, some fail, or a
+        /// still-pending set gh stopped watching). Fetch the PR and render.
+        case settled
+        /// gh found no checks registered on the PR and returned before watching.
+        /// Right after a push this is spin-up lag, not a terminal "none" — retry.
+        case noChecksYet
+        /// gh is unauthenticated.
+        case authError
+        /// Any other non-zero exit; carries gh's diagnostic for the error block.
+        case otherError(String)
+    }
+
+    /// Classify a `gh pr checks --watch` result. Pure: no I/O, so the loop and
+    /// the tests share one source of truth for the exit-code + stderr contract.
+    ///
+    /// gh exits 0 (all pass), 1 (some fail OR no checks reported), or 8 (still
+    /// pending). Exit 1 is overloaded: with zero checks gh returns "no checks
+    /// reported on the '<branch>' branch" *before* entering the watch loop, so a
+    /// plain exit-code test mistakes spin-up lag for a failing terminal state.
+    /// The stderr string is the only signal that separates the two.
+    static func classifyWatch(exitCode: Int32, stderr: String) -> WatchOutcome {
+        if stderr.contains("no checks reported") { return .noChecksYet }
+        if [0, 1, 8].contains(exitCode) { return .settled }
+        if stderr.contains("gh auth login") || stderr.contains("authentication") {
+            return .authError
+        }
+        return .otherError(stderr)
+    }
+
+    /// Drives `gh pr checks --watch` in an appear-poll loop, then renders the
+    /// same block as pr-status. gh's `--watch` blocks server-side while checks
+    /// are pending; the only case it can't cover is checks that haven't
+    /// registered yet, so on `.noChecksYet` we sleep and re-run until they
+    /// appear. No timeout: the loop runs until checks settle or the host cancels
+    /// the call (which kills the in-flight gh child). `intervalSeconds` is gh's
+    /// refresh cadence in watch mode and the retry gap.
     private static func handleWaitForChecks(
         ghPath: String, repoPath: String, pr: String, intervalSeconds: Int
     ) async throws -> CallTool.Result {
@@ -168,27 +202,37 @@ enum GitHubTool {
         let quotedGh = shellSingleQuoted(ghPath)
         let quotedPR = shellSingleQuoted(pr)
         let script = "exec \(quotedGh) pr checks \(quotedPR) --watch --interval \(intervalSeconds) >/dev/null"
-        let watch: ShellCommand.Result
-        do {
-            watch = try await ShellCommand.run("/bin/sh", arguments: ["-c", script], workingDirectory: repoPath)
-        } catch {
-            return errorResult("gh pr checks failed: \(error)")
-        }
 
-        // gh exits 0 (all pass), 1 (some fail), or 8 (still pending) — all mean
-        // the watch concluded and a final state exists to render. Any other code
-        // is a real failure (auth is 4; disambiguate by message).
-        if ![0, 1, 8].contains(watch.exitCode) {
-            let output = watch.output.trimmingCharacters(in: .whitespacesAndNewlines)
-            if output.contains("gh auth login") || output.contains("authentication") {
-                return errorResult("gh is not authenticated. Run `gh auth login`.\n\n\(output)")
+        while true {
+            let watch: ShellCommand.Result
+            do {
+                watch = try await ShellCommand.run("/bin/sh", arguments: ["-c", script], workingDirectory: repoPath)
+            } catch {
+                return errorResult("gh pr checks failed: \(error)")
             }
-            return errorResult("gh pr checks failed:\n\(output)")
-        }
 
-        switch await fetchPR(ghPath: ghPath, repoPath: repoPath, pr: pr) {
-        case .success(let value): return textResult(waitVerdict(pr: value))
-        case .failure(let result): return result
+            let stderr = watch.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            switch classifyWatch(exitCode: watch.exitCode, stderr: stderr) {
+            case .settled:
+                switch await fetchPR(ghPath: ghPath, repoPath: repoPath, pr: pr) {
+                case .success(let value): return textResult(waitVerdict(pr: value))
+                case .failure(let result): return result
+                }
+            case .noChecksYet:
+                // gh returned before watching because no checks exist yet. Wait a
+                // cadence and re-run; the next --watch picks up checks once they
+                // register. Sleep via the same spawn path (no Task.sleep, which
+                // starves the cooperative pool). Cancelling the call kills this.
+                do {
+                    _ = try await ShellCommand.run("/bin/sh", arguments: ["-c", "sleep \(intervalSeconds)"], workingDirectory: repoPath)
+                } catch {
+                    return errorResult("wait retry failed: \(error)")
+                }
+            case .authError:
+                return errorResult("gh is not authenticated. Run `gh auth login`.\n\n\(stderr)")
+            case .otherError(let output):
+                return errorResult("gh pr checks failed:\n\(output)")
+            }
         }
     }
 
