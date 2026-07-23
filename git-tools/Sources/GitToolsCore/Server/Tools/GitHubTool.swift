@@ -53,7 +53,7 @@ enum GitHubTool {
                     ]),
                     "pollSeconds": .object([
                         "type": .string("integer"),
-                        "description": .string("wait-for-checks: seconds between polls (default \(defaultPollSeconds), minimum \(minPollSeconds))"),
+                        "description": .string("wait-for-checks: gh watch refresh interval in seconds (default \(defaultPollSeconds), minimum \(minPollSeconds))"),
                     ]),
                 ]),
                 "required": .array([.string("action"), .string("repoPath")]),
@@ -83,9 +83,9 @@ enum GitHubTool {
         case "pr-status":
             return try await handlePRStatus(ghPath: ghPath, repoPath: repoPath, pr: prArg(args, action: action))
         case "wait-for-checks":
-            let poll = max(minPollSeconds, args["pollSeconds"]?.intValue ?? defaultPollSeconds)
+            let interval = max(minPollSeconds, args["pollSeconds"]?.intValue ?? defaultPollSeconds)
             return try await handleWaitForChecks(
-                ghPath: ghPath, repoPath: repoPath, pr: prArg(args, action: action), pollSeconds: poll
+                ghPath: ghPath, repoPath: repoPath, pr: prArg(args, action: action), intervalSeconds: interval
             )
         default:
             throw MCPError.invalidParams("Unknown action: \(action). Valid actions: list-active-prs, pr-status, wait-for-checks")
@@ -152,25 +152,37 @@ enum GitHubTool {
 
     // MARK: - Wait For Checks
 
-    /// Polls until no checks are pending. No timeout: a wedged check keeps this
-    /// running until the checks settle or the host cancels the call (which
-    /// propagates through Task.sleep and kills the in-flight gh child).
+    /// Blocks on `gh pr checks --watch`, which waits server-side until the PR's
+    /// checks finish, then renders the same block as pr-status. One child, no
+    /// per-tick round-trip. No timeout: gh watches until checks settle or the
+    /// host cancels the call (which kills the in-flight gh child).
+    /// `intervalSeconds` is gh's refresh cadence in watch mode.
     private static func handleWaitForChecks(
-        ghPath: String, repoPath: String, pr: String, pollSeconds: Int
+        ghPath: String, repoPath: String, pr: String, intervalSeconds: Int
     ) async throws -> CallTool.Result {
-        while true {
-            let fetched: PullRequest
-            switch await fetchPR(ghPath: ghPath, repoPath: repoPath, pr: pr) {
-            case .success(let value): fetched = value
-            case .failure(let result): return result
-            }
+        let watch: ShellCommand.Result
+        do {
+            watch = try await gh(ghPath, [
+                "pr", "checks", pr, "--watch", "--interval", "\(intervalSeconds)",
+            ], workingDirectory: repoPath)
+        } catch {
+            return errorResult("gh pr checks failed: \(error)")
+        }
 
-            let rollup = fetched.statusCheckRollup ?? []
-            if rollup.isEmpty || !rollup.contains(where: { $0.outcome == .pending }) {
-                return textResult(waitVerdict(pr: fetched))
+        // gh exits 0 (all pass), 1 (some fail), or 8 (still pending) — all mean
+        // the watch concluded and a final state exists to render. Any other code
+        // is a real failure (auth is 4; disambiguate by message).
+        if ![0, 1, 8].contains(watch.exitCode) {
+            let output = watch.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            if output.contains("gh auth login") || output.contains("authentication") {
+                return errorResult("gh is not authenticated. Run `gh auth login`.\n\n\(output)")
             }
+            return errorResult("gh pr checks failed:\n\(output)")
+        }
 
-            try await Task.sleep(for: .seconds(pollSeconds))
+        switch await fetchPR(ghPath: ghPath, repoPath: repoPath, pr: pr) {
+        case .success(let value): return textResult(waitVerdict(pr: value))
+        case .failure(let result): return result
         }
     }
 
