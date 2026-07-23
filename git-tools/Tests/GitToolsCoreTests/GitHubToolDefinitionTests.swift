@@ -39,12 +39,20 @@ final class GitHubToolDefinitionTests: XCTestCase {
         XCTAssertEqual(required.map(Set.init), ["action", "repoPath"])
     }
 
-    func testActionEnumContainsListActivePRs() throws {
+    func testActionEnumValues() throws {
         let json = try schemaJSON()
         let properties = json["properties"] as? [String: Any]
         let actionProp = properties?["action"] as? [String: Any]
         let enumValues = actionProp?["enum"] as? [String]
-        XCTAssertEqual(enumValues, ["list-active-prs"])
+        XCTAssertEqual(enumValues, ["list-active-prs", "wait-for-checks"])
+    }
+
+    func testSchemaExposesWaitForChecksProperties() throws {
+        let json = try schemaJSON()
+        let properties = try XCTUnwrap(json["properties"] as? [String: Any])
+        for key in ["pr", "pollSeconds"] {
+            XCTAssertNotNil(properties[key], "missing property: \(key)")
+        }
     }
 
     func testReadOnlyOpenWorld() {
@@ -90,13 +98,35 @@ final class GitHubToolDefinitionTests: XCTestCase {
         }
     }
 
+    func testWaitForChecksMissingPRThrows() async {
+        do {
+            _ = try await GitHubTool.handle([
+                "action": .string("wait-for-checks"),
+                "repoPath": .string("/tmp"),
+            ])
+            XCTFail("expected throw")
+        } catch let error as MCPError {
+            XCTAssertTrue("\(error)".contains("pr"), "\(error)")
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
     // MARK: - Merge state
 
     private func decodePR(mergeStateStatus: String?) throws -> GitHubTool.PullRequest {
+        try decodePR(mergeStateStatus: mergeStateStatus, statusCheckRollup: "[]")
+    }
+
+    /// `statusCheckRollup` is spliced in verbatim as a JSON array literal.
+    private func decodePR(
+        mergeStateStatus: String?,
+        statusCheckRollup: String
+    ) throws -> GitHubTool.PullRequest {
         let mergeField = mergeStateStatus.map { "\"\($0)\"" } ?? "null"
         let json = """
         {"number":1001,"title":"t","isDraft":false,"state":"OPEN",
-         "baseRefName":"main","statusCheckRollup":[],"mergeStateStatus":\(mergeField)}
+         "baseRefName":"main","statusCheckRollup":\(statusCheckRollup),"mergeStateStatus":\(mergeField)}
         """
         return try JSONDecoder().decode(GitHubTool.PullRequest.self, from: Data(json.utf8))
     }
@@ -117,5 +147,43 @@ final class GitHubToolDefinitionTests: XCTestCase {
     func testFormatReportsClean() throws {
         let output = GitHubTool.format(pr: try decodePR(mergeStateStatus: "CLEAN"))
         XCTAssertTrue(output.contains("merge: clean"), output)
+    }
+
+    // MARK: - Wait verdict
+
+    private static let passingCheck = """
+    {"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://ci/1"}
+    """
+    private static let failingCheck = """
+    {"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://ci/1"}
+    """
+    private static let runningCheck = """
+    {"__typename":"CheckRun","name":"build","status":"IN_PROGRESS","conclusion":"","detailsUrl":"https://ci/1"}
+    """
+
+    func testWaitVerdictPassing() throws {
+        let pr = try decodePR(mergeStateStatus: "CLEAN", statusCheckRollup: "[\(Self.passingCheck)]")
+        let output = GitHubTool.waitVerdict(pr: pr)
+        XCTAssertTrue(output.contains("checks complete: passing"), output)
+    }
+
+    func testWaitVerdictFailing() throws {
+        let pr = try decodePR(mergeStateStatus: "CLEAN", statusCheckRollup: "[\(Self.failingCheck)]")
+        let output = GitHubTool.waitVerdict(pr: pr)
+        XCTAssertTrue(output.contains("checks complete: failing"), output)
+    }
+
+    func testWaitVerdictNone() throws {
+        let pr = try decodePR(mergeStateStatus: "CLEAN", statusCheckRollup: "[]")
+        let output = GitHubTool.waitVerdict(pr: pr)
+        XCTAssertTrue(output.contains("checks complete: none"), output)
+    }
+
+    // A running check classifies as pending — this is the predicate the poll
+    // loop blocks on, so waitVerdict is never reached while it holds.
+    func testRunningCheckIsPending() throws {
+        let pr = try decodePR(mergeStateStatus: "CLEAN", statusCheckRollup: "[\(Self.runningCheck)]")
+        let rollup = try XCTUnwrap(pr.statusCheckRollup)
+        XCTAssertTrue(rollup.contains { $0.outcome == .pending })
     }
 }

@@ -22,11 +22,15 @@ enum GitHubTool {
     static var isAvailable: Bool { ghPath != nil }
 
     private static let listLimit = 100
+    private static let defaultPollSeconds = 15
+    private static let minPollSeconds = 5
+    /// gh's --json field set shared by both list and single-PR view.
+    private static let prJSONFields = "number,title,isDraft,state,baseRefName,statusCheckRollup,mergeStateStatus"
 
     static var definition: Tool {
         Tool(
             name: name,
-            description: "GitHub operations via the gh CLI. Supports list-active-prs (open and draft pull requests with per-PR check health and merge state, including conflicts).",
+            description: "GitHub operations via the gh CLI. Supports list-active-prs (open and draft pull requests with per-PR check health and merge state, including conflicts) and wait-for-checks (poll a single PR until its CI checks finish, then report the outcome).",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -34,12 +38,21 @@ enum GitHubTool {
                         "type": .string("string"),
                         "enum": .array([
                             .string("list-active-prs"),
+                            .string("wait-for-checks"),
                         ]),
-                        "description": .string("The GitHub action to perform. One of: list-active-prs"),
+                        "description": .string("The GitHub action to perform. One of: list-active-prs, wait-for-checks"),
                     ]),
                     "repoPath": .object([
                         "type": .string("string"),
                         "description": .string("Absolute path to a local clone; gh infers the repository from its remote"),
+                    ]),
+                    "pr": .object([
+                        "type": .string("integer"),
+                        "description": .string("PR number to wait on (required for wait-for-checks)"),
+                    ]),
+                    "pollSeconds": .object([
+                        "type": .string("integer"),
+                        "description": .string("wait-for-checks: seconds between polls (default \(defaultPollSeconds), minimum \(minPollSeconds))"),
                     ]),
                 ]),
                 "required": .array([.string("action"), .string("repoPath")]),
@@ -66,8 +79,16 @@ enum GitHubTool {
         switch action {
         case "list-active-prs":
             return try await handleListActivePRs(ghPath: ghPath, repoPath: repoPath)
+        case "wait-for-checks":
+            guard let pr = args["pr"]?.intValue ?? args["pr"]?.stringValue.flatMap(Int.init) else {
+                throw MCPError.invalidParams("Missing required argument for wait-for-checks: pr")
+            }
+            let poll = max(minPollSeconds, args["pollSeconds"]?.intValue ?? defaultPollSeconds)
+            return try await handleWaitForChecks(
+                ghPath: ghPath, repoPath: repoPath, pr: pr, pollSeconds: poll
+            )
         default:
-            throw MCPError.invalidParams("Unknown action: \(action). Valid actions: list-active-prs")
+            throw MCPError.invalidParams("Unknown action: \(action). Valid actions: list-active-prs, wait-for-checks")
         }
     }
 
@@ -106,6 +127,82 @@ enum GitHubTool {
             blocks.append("(showing first \(listLimit); more may exist)")
         }
         return textResult(blocks.joined(separator: "\n\n"))
+    }
+
+    // MARK: - Wait For Checks
+
+    /// Polls until no checks are pending. No timeout: a wedged check keeps this
+    /// running until the checks settle or the host cancels the call (which
+    /// propagates through Task.sleep and kills the in-flight gh child).
+    private static func handleWaitForChecks(
+        ghPath: String, repoPath: String, pr: Int, pollSeconds: Int
+    ) async throws -> CallTool.Result {
+        while true {
+            let fetched: PullRequest
+            switch await fetchPR(ghPath: ghPath, repoPath: repoPath, pr: pr) {
+            case .success(let value): fetched = value
+            case .failure(let result): return result
+            }
+
+            let rollup = fetched.statusCheckRollup ?? []
+            if rollup.isEmpty || !rollup.contains(where: { $0.outcome == .pending }) {
+                return textResult(waitVerdict(pr: fetched))
+            }
+
+            try await Task.sleep(for: .seconds(pollSeconds))
+        }
+    }
+
+    /// Outcome of one fetch: the decoded PR, or a ready-to-return error block.
+    /// A bespoke enum rather than `Result` because `CallTool.Result` is not an
+    /// `Error` and so can't be the failure type.
+    private enum FetchOutcome {
+        case success(PullRequest)
+        case failure(CallTool.Result)
+    }
+
+    /// One `gh pr view` fetch. `.failure` carries a ready-to-return error block
+    /// (auth-aware, mirroring list); `.success` the decoded PR.
+    private static func fetchPR(
+        ghPath: String, repoPath: String, pr: Int
+    ) async -> FetchOutcome {
+        let result: ShellCommand.Result
+        do {
+            result = try await gh(ghPath, [
+                "pr", "view", "\(pr)", "--json", prJSONFields,
+            ], workingDirectory: repoPath)
+        } catch {
+            return .failure(errorResult("gh pr view failed: \(error)"))
+        }
+
+        if result.exitCode != 0 {
+            let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            if output.contains("gh auth login") || output.contains("authentication") {
+                return .failure(errorResult("gh is not authenticated. Run `gh auth login`.\n\n\(output)"))
+            }
+            return .failure(errorResult("gh pr view failed:\n\(output)"))
+        }
+
+        do {
+            return .success(try JSONDecoder().decode(PullRequest.self, from: Data(result.output.utf8)))
+        } catch {
+            return .failure(errorResult("Could not parse gh output: \(error)\n\n\(result.output)"))
+        }
+    }
+
+    /// Verdict line + the standard PR block. `format(pr:)` already lists failing
+    /// check names and URLs, so the header only states the overall outcome.
+    static func waitVerdict(pr: PullRequest) -> String {
+        let rollup = pr.statusCheckRollup ?? []
+        let header: String
+        if rollup.isEmpty {
+            header = "checks complete: none"
+        } else if rollup.contains(where: { $0.outcome == .failing }) {
+            header = "checks complete: failing"
+        } else {
+            header = "checks complete: passing"
+        }
+        return "\(header)\n\n\(format(pr: pr))"
     }
 
     static func format(pr: PullRequest) -> String {
