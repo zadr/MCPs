@@ -160,11 +160,17 @@ enum GitHubTool {
     private static func handleWaitForChecks(
         ghPath: String, repoPath: String, pr: String, intervalSeconds: Int
     ) async throws -> CallTool.Result {
+        // --watch redraws the check table every interval. Redirect gh's stdout
+        // to /dev/null in a shell so those repaints are discarded at the OS
+        // level and never buffered — only the exit code and any stderr
+        // diagnostic come back. Single-quote pr (a number or URL) for the shell;
+        // escape embedded quotes defensively.
+        let quotedGh = shellSingleQuoted(ghPath)
+        let quotedPR = shellSingleQuoted(pr)
+        let script = "exec \(quotedGh) pr checks \(quotedPR) --watch --interval \(intervalSeconds) >/dev/null"
         let watch: ShellCommand.Result
         do {
-            watch = try await gh(ghPath, [
-                "pr", "checks", pr, "--watch", "--interval", "\(intervalSeconds)",
-            ], workingDirectory: repoPath)
+            watch = try await ShellCommand.run("/bin/sh", arguments: ["-c", script], workingDirectory: repoPath)
         } catch {
             return errorResult("gh pr checks failed: \(error)")
         }
@@ -382,6 +388,12 @@ enum GitHubTool {
 
     private static func gh(_ executable: String, _ arguments: [String], workingDirectory: String) async throws -> ShellCommand.Result {
         try await ShellCommand.run(executable, arguments: arguments, workingDirectory: workingDirectory)
+    }
+
+    /// Wrap a string in single quotes for /bin/sh, escaping embedded quotes via
+    /// the '\'' idiom. Safe for arbitrary paths and PR URLs.
+    private static func shellSingleQuoted(_ s: String) -> String {
+        "'\(s.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
     private static func textResult(_ text: String) -> CallTool.Result {
